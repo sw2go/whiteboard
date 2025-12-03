@@ -1,0 +1,214 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>SVG Whiteboard (Draw + Erase, Mouse + Touch)</title>
+  <style>
+    body { font-family: sans-serif; }
+    .toolbar {
+      margin-bottom: 8px;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    #board {
+      border: 1px solid #ccc;
+      width: 800px;
+      height: 600px;
+      cursor: crosshair;
+      background: #fff; /* white background for nicer PNG export */
+      /* Prevent touch scrolling/zooming while drawing */
+      touch-action: none;
+    }
+
+    /* Visual feedback while erasing */
+    .erase-mode { cursor: cell; }
+    .erasable { pointer-events: stroke; } /* ensure clicks/taps hit stroke outlines */
+    .erase-mode .erasable:hover {
+      filter: brightness(0.9);
+      stroke-opacity: 0.7;
+    }
+
+    .btn { padding: 6px 10px; }
+  </style>
+</head>
+<body>
+  <div class="toolbar">
+    <label>Color: <input type="color" id="colorPicker" value="#000000"></label>
+    <label>Stroke Width: <input type="number" id="strokeWidth" value="2" min="1" max="40"></label>
+
+    <button class="btn" id="drawBtn">Draw</button>
+    <button class="btn" id="eraseBtn">Erase</button>
+
+    <button class="btn" id="saveSvgBtn">Save as SVG</button>
+    <button class="btn" id="savePngBtn">Save as PNG</button>
+  </div>
+
+  <!-- Explicit size for consistent export -->
+  <svg id="board" xmlns="http://www.w3.org/2000/svg" width="800" height="600"></svg>
+
+  <script>
+    const svg = document.getElementById('board');
+    const colorPicker = document.getElementById('colorPicker');
+    const strokeWidthInput = document.getElementById('strokeWidth');
+    const drawBtn = document.getElementById('drawBtn');
+    const eraseBtn = document.getElementById('eraseBtn');
+    const saveSvgBtn = document.getElementById('saveSvgBtn');
+    const savePngBtn = document.getElementById('savePngBtn');
+
+    let mode = 'draw';           // 'draw' or 'erase'
+    let drawing = false;         // currently drawing?
+    let path = null;             // active path element
+    let activePointerId = null;  // track a single pointer for drawing
+
+    // ---- Mode toggles ----
+    function setMode(newMode) {
+      mode = newMode;
+      if (mode === 'erase') {
+        svg.classList.add('erase-mode');
+      } else {
+        svg.classList.remove('erase-mode');
+      }
+    }
+    drawBtn.addEventListener('click', () => setMode('draw'));
+    eraseBtn.addEventListener('click', () => setMode('erase'));
+
+    // ---- Helper: position relative to SVG ----
+    function getPositionFromClient(clientX, clientY) {
+      const rect = svg.getBoundingClientRect();
+      return {
+        x: clientX - rect.left,
+        y: clientY - rect.top
+      };
+    }
+
+    // ---- Pointer Events (works for mouse + touch + pen) ----
+    svg.addEventListener('pointerdown', (e) => {
+      // Avoid multi-pointer drawing; only track one active pointer
+      if (activePointerId !== null && e.pointerId !== activePointerId) return;
+
+      // Prevent default to stop touch scrolling
+      e.preventDefault();
+
+      if (mode === 'erase') {
+        const target = e.target;
+        if (target && target.dataset && target.dataset.stroke === '1') {
+          target.remove();
+        }
+        // Do not start drawing in erase mode
+        return;
+      }
+
+      const pos = getPositionFromClient(e.clientX, e.clientY);
+      drawing = true;
+      activePointerId = e.pointerId;
+
+      path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('stroke', colorPicker.value);
+      path.setAttribute('stroke-width', strokeWidthInput.value);
+      path.setAttribute('fill', 'none');
+      path.setAttribute('d', `M${pos.x},${pos.y}`);
+      path.dataset.stroke = '1';          // mark erasable
+      path.classList.add('erasable');     // visual + hit-testing
+      svg.appendChild(path);
+    });
+
+    svg.addEventListener('pointermove', (e) => {
+      if (!drawing || mode !== 'draw' || !path) return;
+      if (activePointerId !== e.pointerId) return; // ignore other pointers
+      e.preventDefault();
+
+      const pos = getPositionFromClient(e.clientX, e.clientY);
+      path.setAttribute('d', path.getAttribute('d') + ` L${pos.x},${pos.y}`);
+    });
+
+    function endDrawing(e) {
+      if (activePointerId !== null && e.pointerId !== activePointerId) return;
+      drawing = false;
+      path = null;
+      activePointerId = null;
+    }
+    svg.addEventListener('pointerup', endDrawing);
+    svg.addEventListener('pointercancel', endDrawing);
+    svg.addEventListener('pointerleave', endDrawing);
+
+    // ---- Save as SVG ----
+    function saveSVG() {
+      const serializer = new XMLSerializer();
+      let source = serializer.serializeToString(svg);
+
+      // Ensure xmlns is present
+      if (!source.match(/^<svg[^>]+xmlns="http:\/\/www\.w3\.org\/2000\/svg"/)) {
+        source = source.replace(/^<svg/, '<svg xmlns="http://www.w3.org/2000/svg"');
+      }
+
+      // Add viewBox to make the SVG scalable (if missing)
+      if (!svg.getAttribute('viewBox')) {
+        source = source.replace(/^<svg[^>]+>/, (m) => {
+          const w = svg.getAttribute('width') || svg.clientWidth;
+          const h = svg.getAttribute('height') || svg.clientHeight;
+          return m.replace('>', ` viewBox="0 0 ${w} ${h}">`);
+        });
+      }
+
+      const blob = new Blob([source], { type: 'image/svg+xml;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      download(url, 'drawing.svg');
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+
+    // ---- Save as PNG ----
+    function savePNG() {
+      const serializer = new XMLSerializer();
+      const source = serializer.serializeToString(svg);
+
+      const svgBlob = new Blob([source], { type: 'image/svg+xml;charset=utf-8' });
+      const svgUrl = URL.createObjectURL(svgBlob);
+
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const w = svg.width.baseVal.value || svg.clientWidth;
+        const h = svg.height.baseVal.value || svg.clientHeight;
+        canvas.width = w;
+        canvas.height = h;
+
+        const ctx = canvas.getContext('2d');
+        // Fill white background so PNG isn't transparent
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, w, h);
+
+        ctx.drawImage(img, 0, 0, w, h);
+        const pngUrl = canvas.toDataURL('image/png');
+        download(pngUrl, 'drawing.png');
+
+        URL.revokeObjectURL(svgUrl);
+      };
+      img.onerror = () => {
+        alert('PNG export failed to load the SVG image.');
+        URL.revokeObjectURL(svgUrl);
+      };
+      img.src = svgUrl;
+    }
+
+    // ---- Download helper ----
+    function download(url, filename) {
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    }
+
+    // Hook buttons
+    saveSvgBtn.addEventListener('click', saveSVG);
+    savePngBtn.addEventListener('click', savePNG);
+
+    // Start in draw mode
+    setMode('draw');
+  </script>
+</body>
+</html>
