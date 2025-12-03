@@ -1,0 +1,168 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SVG Whiteboard</title>
+<style>
+  body, html { margin:0; padding:0; height:100%; overflow:hidden; }
+  #toolbar {
+    position: fixed; top: 10px; left: 10px; background: rgba(255,255,255,0.9);
+    padding: 8px; border-radius: 6px; display: flex; gap: 8px; z-index: 10;
+  }
+  #board { width:100%; height:100%; touch-action:none; background:#fff; }
+  .erase-active { outline: 2px solid red; }
+</style>
+</head>
+<body>
+<div id="toolbar">
+  <input type="color" id="color" value="#000000">
+  <input type="range" id="stroke" min="1" max="20" value="3">
+  <button id="drawBtn">Draw</button>
+  <button id="eraseBtn">Erase</button>
+  <button id="openBtn">Open SVG</button>
+  <button id="saveBtn">Save SVG</button>
+  <button id="pngBtn">Save PNG</button>
+  <input type="file" id="fileInput" accept=".svg" style="display:none">
+</div>
+
+<svg id="board" xmlns="http://www.w3.org/2000/svg"></svg>
+
+<script>
+const svg = document.getElementById('board');
+let viewBox = { x:0, y:0, w:window.innerWidth, h:window.innerHeight };
+svg.setAttribute('viewBox', `${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}`);
+
+let mode = 'draw'; // draw or erase
+let currentPath = null;
+let colorPicker = document.getElementById('color');
+let strokeSlider = document.getElementById('stroke');
+let pointers = new Map();
+let lastDistance = null;
+
+// Update viewBox on resize (keep zoom)
+window.addEventListener('resize', () => {
+  const scale = viewBox.w / svg.clientWidth;
+  viewBox.w = window.innerWidth * scale;
+  viewBox.h = window.innerHeight * scale;
+  svg.setAttribute('viewBox', `${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}`);
+});
+
+// Convert screen coords to SVG coords
+function screenToSVG(x, y) {
+  return {
+    x: viewBox.x + (x / svg.clientWidth) * viewBox.w,
+    y: viewBox.y + (y / svg.clientHeight) * viewBox.h
+  };
+}
+
+// Pointer events
+svg.addEventListener('pointerdown', e => {
+  svg.setPointerCapture(e.pointerId);
+  pointers.set(e.pointerId, { x:e.clientX, y:e.clientY });
+  if (mode === 'draw' && pointers.size === 1) {
+    const pt = screenToSVG(e.clientX, e.clientY);
+    currentPath = document.createElementNS('http://www.w3.org/2000/svg','path');
+    currentPath.setAttribute('d', `M ${pt.x} ${pt.y}`);
+    currentPath.setAttribute('stroke', colorPicker.value);
+    currentPath.setAttribute('stroke-width', strokeSlider.value);
+    currentPath.setAttribute('fill','none');
+    currentPath.setAttribute('stroke-linecap','round');
+    svg.appendChild(currentPath);
+  }
+});
+
+svg.addEventListener('pointermove', e => {
+  if (!pointers.has(e.pointerId)) return;
+  const prev = pointers.get(e.pointerId);
+  pointers.set(e.pointerId, { x:e.clientX, y:e.clientY });
+
+  if (pointers.size === 1 && mode === 'draw' && currentPath) {
+    const pt = screenToSVG(e.clientX, e.clientY);
+    currentPath.setAttribute('d', currentPath.getAttribute('d') + ` L ${pt.x} ${pt.y}`);
+  } else if (pointers.size === 1 && mode === 'erase') {
+    const pt = screenToSVG(e.clientX, e.clientY);
+    const hit = document.elementFromPoint(e.clientX, e.clientY);
+    if (hit && hit.tagName === 'path') hit.remove();
+  } else if (pointers.size === 2) {
+    // Pan & Zoom
+    const arr = Array.from(pointers.values());
+    const dx1 = arr[0].x, dy1 = arr[0].y;
+    const dx2 = arr[1].x, dy2 = arr[1].y;
+    const midX = (dx1 + dx2)/2, midY = (dy1 + dy2)/2;
+    const dist = Math.hypot(dx2 - dx1, dy2 - dy1);
+    const prevDist = lastDistance || dist;
+    const scale = dist / prevDist;
+    lastDistance = dist;
+
+    // Zoom around midpoint
+    const svgMid = screenToSVG(midX, midY);
+    viewBox.w /= scale;
+    viewBox.h /= scale;
+    viewBox.x = svgMid.x - (midX / svg.clientWidth) * viewBox.w;
+    viewBox.y = svgMid.y - (midY / svg.clientHeight) * viewBox.h;
+    svg.setAttribute('viewBox', `${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}`);
+  }
+});
+
+svg.addEventListener('pointerup', e => {
+  svg.releasePointerCapture(e.pointerId);
+  pointers.delete(e.pointerId);
+  if (pointers.size < 2) lastDistance = null;
+  if (mode === 'draw') currentPath = null;
+});
+
+// Toolbar actions
+document.getElementById('drawBtn').onclick = () => {
+  mode = 'draw';
+  svg.classList.remove('erase-active');
+};
+document.getElementById('eraseBtn').onclick = () => {
+  mode = 'erase';
+  svg.classList.add('erase-active');
+};
+
+// Open SVG
+document.getElementById('openBtn').onclick = () => document.getElementById('fileInput').click();
+document.getElementById('fileInput').onchange = e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => svg.innerHTML = reader.result.match(/<svg[^>]*>([\s\S]*)<\/svg>/)[1];
+  reader.readAsText(file);
+};
+
+// Save SVG
+document.getElementById('saveBtn').onclick = () => {
+  const blob = new Blob([`<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}">${svg.innerHTML}</svg>`], {type:'image/svg+xml'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'whiteboard.svg';
+  a.click();
+};
+
+// Save PNG (transparent)
+document.getElementById('pngBtn').onclick = () => {
+  const img = new Image();
+  const svgData = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}">${svg.innerHTML}</svg>`;
+  const svgBlob = new Blob([svgData], {type:'image/svg+xml'});
+  const url = URL.createObjectURL(svgBlob);
+  img.onload = () => {
+    const canvas = document.createElement('canvas');
+    canvas.width = svg.clientWidth;
+    canvas.height = svg.clientHeight;
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    ctx.drawImage(img,0,0,canvas.width,canvas.height);
+    URL.revokeObjectURL(url);
+    const a = document.createElement('a');
+    a.href = canvas.toDataURL('image/png');
+    a.download = 'whiteboard.png';
+    a.click();
+  };
+  img.src = url;
+};
+</script>
+</body>
+</html>

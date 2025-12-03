@@ -1,0 +1,209 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SVG Whiteboard</title>
+<style>
+  body { margin: 0; font-family: sans-serif; }
+  #toolbar {
+    display: flex; gap: 10px; padding: 10px; background: #f0f0f0;
+    position: fixed; top: 0; width: 100%; z-index: 10;
+  }
+  #board {
+    width: 100%; height: calc(100vh - 60px); margin-top: 60px;
+    border: 1px solid #ccc;
+    touch-action: none; /* Required for multi-touch */
+  }
+  input[type="color"], input[type="range"] { vertical-align: middle; }
+</style>
+</head>
+<body>
+
+<div id="toolbar">
+  <input type="color" id="colorPicker" value="#000000">
+  <input type="range" id="strokeWidth" min="1" max="20" value="2">
+  <button id="eraseBtn">Erase</button>
+  <input type="file" id="openFile" accept=".svg">
+  <button id="saveSVG">Save SVG</button>
+  <button id="savePNG">Save PNG</button>
+</div>
+
+<svg id="board"></svg>
+
+<script>
+const svg = document.getElementById('board');
+let drawing = false, currentPath = null;
+let color = document.getElementById('colorPicker').value;
+let strokeWidth = document.getElementById('strokeWidth').value;
+let eraseMode = false;
+
+// Initialize SVG root with proper attributes
+(function initSvgRoot() {
+  const rect = svg.getBoundingClientRect();
+  const width = Math.round(rect.width) || 1024;
+  const height = Math.round(rect.height) || 768;
+  svg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+  svg.setAttribute('width', width);
+  svg.setAttribute('height', height);
+  svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+  ensureBackgroundRect();
+})();
+
+// Add white background
+function ensureBackgroundRect() {
+  const rectEl = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+  rectEl.setAttribute('data-bg', '1');
+  rectEl.setAttribute('x', 0);
+  rectEl.setAttribute('y', 0);
+  rectEl.setAttribute('width', '100%');
+  rectEl.setAttribute('height', '100%');
+  rectEl.setAttribute('fill', 'white');
+  svg.insertBefore(rectEl, svg.firstChild);
+}
+
+// Update color and stroke width
+document.getElementById('colorPicker').addEventListener('input', e => color = e.target.value);
+documentWidth').addEventListener('input', e => strokeWidth = e.target.value);
+
+// Toggle erase mode
+document.getElementById('eraseBtn').addEventListener('click', () => {
+  eraseMode = !eraseMode;
+  document.getElementById('eraseBtn').style.background = eraseMode ? '#f88' : '';
+});
+
+// Start drawing
+function startDraw(x, y) {
+  if (eraseMode) return;
+  drawing = true;
+  currentPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  currentPath.setAttribute('d', `M${x},${y}`);
+  currentPath.setAttribute('stroke', color);
+  currentPath.setAttribute('stroke-width', strokeWidth);
+  currentPath.setAttribute('fill', 'none');
+  currentPath.setAttribute('stroke-linecap', 'round');
+  svg.appendChild(currentPath);
+}
+
+// Continue drawing
+function draw(x, y) {
+  if (!drawing || eraseMode) return;
+  let d = currentPath.getAttribute('d');
+  currentPath.setAttribute('d', `${d} L${x},${y}`);
+}
+
+// Stop drawing
+function stopDraw() { drawing = false; currentPath = null; }
+
+// Erase on click
+svg.addEventListener('click', e => {
+  if (eraseMode && e.target.tagName === 'path') {
+    e.target.remove();
+  }
+});
+
+// Mouse events
+svg.addEventListener('mousedown', e => startDraw(e.offsetX, e.offsetY));
+svg.addEventListener('mousemove', e => draw(e.offsetX, e.offsetY));
+svg.addEventListener('mouseup', stopDraw);
+svg.addEventListener('mouseleave', stopDraw);
+
+// Touch events for mobile
+svg.addEventListener('touchstart', e => {
+  e.preventDefault();
+  const touch = e.touches[0];
+  const rect = svg.getBoundingClientRect();
+  startDraw(touch.clientX - rect.left, touch.clientY - rect.top);
+});
+svg.addEventListener('touchmove', e => {
+  e.preventDefault();
+  const touch = e.touches[0];
+  const rect = svg.getBoundingClientRect();
+  draw(touch.clientX - rect.left, touch.clientY - rect.top);
+});
+svg.addEventListener('touchend', stopDraw);
+
+// Open SVG file (avoid nested <svg>)
+document.getElementById('openFile').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  const text = await file.text();
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(text, 'image/svg+xml');
+  const loadedRoot = doc.documentElement;
+
+  // Adopt size if available
+  const w = loadedRoot.getAttribute('width');
+  const h = loadedRoot.getAttribute('height');
+  const vb = loadedRoot.getAttribute('viewBox');
+  if (w) svg.setAttribute('width', w);
+  if (h) svg.setAttribute('height', h);
+  if (vb) svg.setAttribute('viewBox', vb);
+
+  // Clear current board
+  while (svg.firstChild) svg.removeChild(svg.firstChild);
+
+  // Move children
+  Array.from(loadedRoot.childNodes).forEach(node => {
+    if (node.nodeType === Node.ELEMENT_NODE) {
+      svg.appendChild(document.importNode(node, true));
+    }
+  });
+});
+
+// Save as SVG (standalone)
+document.getElementById('saveSVG').addEventListener('click', () => {
+  const rect = svg.getBoundingClientRect();
+  const width = Math.round(rect.width);
+  const height = Math.round(rect.height);
+  const xmlns = 'http://www.w3.org/2000/svg';
+  const svgHeader = `<svg xmlns="${xmlns}" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">`;
+
+  const content = Array.from(svg.childNodes)
+    .map(node => node.nodeType === Node.ELEMENT_NODE ? new XMLSerializer().serializeToString(node) : '')
+    .join('\n');
+
+  const svgString = `${svgHeader}\n${content}\n</svg>`;
+  const blob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'whiteboard.svg';
+  a.click();
+  URL.revokeObjectURL(url);
+});
+
+// Save as PNG
+document.getElementById('savePNG').addEventListener('click', () => {
+  const rect = svg.getBoundingClientRect();
+  const width = Math.round(rect.width);
+  const height = Math.round(rect.height);
+
+  const cloned = svg.cloneNode(true);
+  cloned.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+  cloned.setAttribute('width', width);
+  cloned.setAttribute('height', height);
+  cloned.setAttribute('viewBox', `0 0 ${width} ${height}`);
+  const svgData = new XMLSerializer().serializeToString(cloned);
+
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
+  const img = new Image();
+
+  img.onload = () => {
+    ctx.drawImage(img, 0, 0);
+    const a = document.createElement('a');
+    a.href = canvas.toDataURL('image/png');
+    a.download = 'whiteboard.png';
+    a.click();
+  };
+  img.src = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(svgData)));
+});
+</script>
+
+</body>
+</html>

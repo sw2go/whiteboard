@@ -1,0 +1,134 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SVG Whiteboard</title>
+<style>
+    body, html { margin: 0; padding: 0; height: 100%; overflow: hidden; }
+    #toolbar {
+        position: fixed; top: 10px; left: 10px; background: rgba(255,255,255,0.9);
+        padding: 10px; border-radius: 8px; display: flex; gap: 10px; z-index: 1000;
+    }
+    #whiteboard { width: 100%; height: 100%; touch-action: none; }
+    input[type="color"], input[type="range"] { cursor: pointer; }
+</style>
+</head>
+<body>
+<div id="toolbar">
+    <input type="color" id="colorPicker" value="#000000">
+    <input type="range" id="strokeWidth" min="1" max="20" value="3">
+    <button id="eraseBtn">Erase</button>
+    <button id="saveSVG">Save SVG</button>
+    <button id="savePNG">Save PNG</button>
+    <input type="file" id="openSVG" accept=".svg">
+</div>
+<svg id="whiteboard" xmlns="http://www.w3.org/2000/svg"></svg>
+
+<script>
+const svg = document.getElementById('whiteboard');
+let drawing = false, currentPath = null, eraseMode = false;
+let color = document.getElementById('colorPicker').value;
+let strokeWidth = document.getElementById('strokeWidth').value;
+let viewBox = { x: 0, y: 0, w: window.innerWidth, h: window.innerHeight };
+svg.setAttribute('viewBox', `${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}`);
+
+window.addEventListener('resize', () => {
+    viewBox.w = window.innerWidth;
+    viewBox.h = window.innerHeight;
+    svg.setAttribute('viewBox', `${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}`);
+});
+
+// Drawing logic
+svg.addEventListener('pointerdown', e => {
+    if (eraseMode) return;
+    drawing = true;
+    currentPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    currentPath.setAttribute('stroke', color);
+    currentPath.setAttribute('stroke-width', strokeWidth);
+    currentPath.setAttribute('fill', 'none');
+    currentPath.setAttribute('d', `M${e.offsetX},${e.offsetY}`);
+    svg.appendChild(currentPath);
+});
+svg.addEventListener('pointermove', e => {
+    if (drawing && currentPath) {
+        let d = currentPath.getAttribute('d');
+        currentPath.setAttribute('d', `${d} L${e.offsetX},${e.offsetY}`);
+    }
+});
+svg.addEventListener('pointerup', () => drawing = false);
+
+// Color & stroke
+document.getElementById('colorPicker').addEventListener('input', e => color = e.target.value);
+document.getElementById('strokeWidth').addEventListener('input', e => strokeWidth = e.target.value);
+
+// Erase mode
+document.getElementById('eraseBtn').addEventListener('click', () => {
+    eraseMode = !eraseMode;
+    svg.style.cursor = eraseMode ? 'crosshair' : 'default';
+});
+svg.addEventListener('click', e => {
+    if (eraseMode && e.target.tagName === 'path') e.target.remove();
+});
+
+// Save SVG
+document.getElementById('saveSVG').addEventListener('click', () => {
+    const blob = new Blob([svg.outerHTML], { type: 'image/svg+xml' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'whiteboard.svg'; a.click();
+    URL.revokeObjectURL(url);
+});
+
+// Save PNG (transparent)
+document.getElementById('savePNG').addEventListener('click', () => {
+    const svgData = new XMLSerializer().serializeToString(svg);
+    const img = new Image();
+    img.src = 'data:image/svg+xml;base64,' + btoa(svgData);
+    img.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = viewBox.w; canvas.height = viewBox.h;
+        const ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0);
+        const a = document.createElement('a');
+        a.href = canvas.toDataURL('image/png');
+        a.download = 'whiteboard.png';
+        a.click();
+    };
+});
+
+// Open SVG
+document.getElementById('openSVG').addEventListener('change', e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = evt => svg.innerHTML = new DOMParser().parseFromString(evt.target.result, 'image/svg+xml').documentElement.innerHTML;
+    reader.readAsText(file);
+});
+
+// Pan & Zoom
+let lastX, lastY, isPanning = false;
+svg.addEventListener('pointerdown', e => {
+    if (eraseMode || drawing) return;
+    isPanning = true; lastX = e.clientX; lastY = e.clientY;
+});
+svg.addEventListener('pointermove', e => {
+    if (isPanning) {
+        let dx = e.clientX - lastX, dy = e.clientY - lastY;
+        viewBox.x -= dx; viewBox.y -= dy;
+        svg.setAttribute('viewBox', `${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}`);
+        lastX = e.clientX; lastY = e.clientY;
+    }
+});
+svg.addEventListener('pointerup', () => isPanning = false);
+svg.addEventListener('wheel', e => {
+    e.preventDefault();
+    const scale = e.deltaY > 0 ? 1.1 : 0.9;
+    viewBox.w *= scale; viewBox.h *= scale;
+    svg.setAttribute('viewBox', `${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}`);
+});
+</script>
+</body>
+</html>

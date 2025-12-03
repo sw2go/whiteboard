@@ -1,0 +1,470 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>SVG Whiteboard – Pure HTML/JS</title>
+<style>
+  :root {
+    --toolbar-bg: #f7f7f7;
+    --border: #ddd;
+    --accent: #1e88e5;
+  }
+  html, body {
+    height: 100%;
+    margin: 0;
+  }
+  body {
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+    display: flex;
+    flex-direction: column;
+    background: #fff;
+  }
+  header {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    background: var(--toolbar-bg);
+  }
+  header .group {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: #fff;
+  }
+  header label {
+    font-size: 14px;
+  }
+  header input[type="color"],
+  header input[type="range"],
+  header button,
+  header select {
+    font-size: 14px;
+  }
+  header button {
+    cursor: pointer;
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    background: #fff;
+    border-radius: 6px;
+  }
+  header button.primary {
+    background: var(--accent);
+    color: white;
+    border-color: var(--accent);
+  }
+  header button:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  /* Board area fills remaining viewport height */
+  main {
+    flex: 1;
+    min-height: 0; /* allow flex child to shrink */
+    display: flex;
+  }
+  /* SVG board scales with window; prevent native touch gestures */
+  #board {
+    width: 100%;
+    height: 100%;
+    background: transparent;           /* PNG export remains transparent */
+    touch-action: none;                /* critical for multi-touch drawing */
+  }
+
+  /* Drawing aesthetics */
+  #strokes path,
+  #imported * {
+    vector-effect: non-scaling-stroke; /* keep stroke width consistent on resize */
+    pointer-events: stroke;            /* allow erasing by tapping/clicking stroke */
+  }
+
+  /* Helpful: indicate current mode visually (optional highlight) */
+  .mode-indicator {
+    font-weight: 600;
+    color: #444;
+  }
+
+  /* Hide the real file input; use label as button */
+  #openSvgInput {
+    position: absolute;
+    left: -9999px;
+    width: 1px; height: 1px;
+    overflow: hidden;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="group">
+    <label for="color">Color</label>
+    <input id="color" type="color" value="#000000" aria-label="Stroke color">
+    <label for="width">Width</label>
+    <input id="width" type="range" min="1" max="40" value="4" step="1" aria-label="Stroke width">
+  </div>
+
+  <div class="group">
+    <button id="modeDraw" class="primary" title="Draw mode">✏️ Draw</button>
+    <button id="modeErase" title="Erase lines">🧽 Erase</button>
+    <span class="mode-indicator" id="modeIndicator">Mode: Draw</span>
+  </div>
+
+  <div class="group">
+    <input id="openSvgInput" type="file" accept=".svg,image/svg+xml" aria-label="Open SVG">
+    <label for="openSvgInput">
+      <button id="openSvgBtn" title="Open SVG">📂 Open SVG</button>
+    </label>
+    <button id="saveSvgBtn" title="Save as SVG">💾 Save SVG</button>
+    <button id="savePngBtn" title="Save as PNG (transparent)">📷 Save PNG</button>
+    <button id="clearBtn" title="Clear board">🗑️ Clear</button>
+  </div>
+</header>
+
+<main>
+  <!-- Fixed logical drawing space; responsive via CSS size -->
+  <svg id="board"
+       xmlns="http://www.w3.org/2000/svg"
+       viewBox="0 0 1200 800"
+       preserveAspectRatio="none"
+       aria-label="SVG whiteboard">
+    <defs></defs>
+    <g id="imported"></g>
+    <g id="strokes"></g>
+  </svg>
+</main>
+
+<script>
+(() => {
+  // Core elements
+  const svg = document.getElementById('board');
+  const imported = document.getElementById('imported');
+  const strokes = document.getElementById('strokes');
+
+  const colorInput  = document.getElementById('color');
+  const widthInput  = document.getElementById('width');
+  const modeDrawBtn = document.getElementById('modeDraw');
+  const modeEraseBtn= document.getElementById('modeErase');
+  const modeIndicator = document.getElementById('modeIndicator');
+  const openSvgInput = document.getElementById('openSvgInput');
+  const saveSvgBtn   = document.getElementById('saveSvgBtn');
+  const savePngBtn   = document.getElementById('savePngBtn');
+  const clearBtn     = document.getElementById('clearBtn');
+
+  // Fixed logical drawing size (viewBox); UI scales with CSS size.
+  const VIEW_W = 1200, VIEW_H = 800;
+
+  // Track active pointers for multi-touch drawing
+  const active = new Map(); // pointerId -> { pathEl, d }
+
+  // Modes: 'draw' or 'erase'
+  let mode = 'draw';
+  updateModeUI();
+
+  modeDrawBtn.addEventListener('click', () => { mode = 'draw'; updateModeUI(); });
+  modeEraseBtn.addEventListener('click', () => { mode = 'erase'; updateModeUI(); });
+
+  function updateModeUI() {
+    modeIndicator.textContent = `Mode: ${mode === 'draw' ? 'Draw' : 'Erase'}`;
+    modeDrawBtn.classList.toggle('primary', mode === 'draw');
+    modeEraseBtn.classList.toggle('primary', mode === 'erase');
+    svg.style.cursor = (mode === 'erase') ? 'crosshair' : 'crosshair';
+  }
+
+  // Utility: Convert screen (client) coords to SVG user space using current transform.
+  function clientToSvgPoint(evt) {
+    const pt = svg.createSVGPoint();
+    pt.x = evt.clientX;
+    pt.y = evt.clientY;
+    const ctm = svg.getScreenCTM();
+    return ctm ? pt.matrixTransform(ctm.inverse()) : pt;
+  }
+
+  // Start drawing a new path for this pointer
+  function beginStroke(evt) {
+    const { x, y } = clientToSvgPoint(evt);
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('fill', 'none');
+    path.setAttribute('stroke', colorInput.value);
+    path.setAttribute('stroke-width', widthInput.value);
+    path.setAttribute('stroke-linecap', 'round');
+    path.setAttribute('stroke-linejoin', 'round');
+    path.setAttribute('vector-effect', 'non-scaling-stroke');
+    path.setAttribute('pointer-events', 'stroke');
+
+    const d = `M ${x} ${y}`;
+    path.setAttribute('d', d);
+    strokes.appendChild(path);
+
+    active.set(evt.pointerId, { pathEl: path, d });
+    try { svg.setPointerCapture(evt.pointerId); } catch (e) {}
+  }
+
+  function extendStroke(evt) {
+    const rec = active.get(evt.pointerId);
+    if (!rec) return;
+    const { x, y } = clientToSvgPoint(evt);
+    rec.d += ` L ${x} ${y}`;
+    rec.pathEl.setAttribute('d', rec.d);
+  }
+
+  function endStroke(evt) {
+    const rec = active.get(evt.pointerId);
+    if (rec) {
+      active.delete(evt.pointerId);
+    }
+    try { svg.releasePointerCapture(evt.pointerId); } catch (e) {}
+  }
+
+  // Erase: tap/click any stroke (path) to remove it
+  function tryErase(evt) {
+    const t = evt.target;
+    // Allow erasing both drawn and imported shapes (paths and other basic shapes)
+    if (t && t instanceof Element) {
+      // Prefer removing a single shape node, not the whole group
+      if (t.tagName.match(/^(path|polyline|polygon|line|rect|circle|ellipse)$/i)) {
+        t.remove();
+        return true;
+      }
+      // If user taps inside a group, try to find a shape under the pointer
+      const el = document.elementFromPoint(evt.clientX, evt.clientY);
+      if (el && el.tagName && el.tagName.match(/^(path|polyline|polygon|line|rect|circle|ellipse)$/i)) {
+        el.remove();
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // Pointer event handlers (unified mouse/touch/pen with multi-touch support)
+  svg.addEventListener('pointerdown', (evt) => {
+    // Only primary button for mouse
+    if (evt.pointerType === 'mouse' && evt.button !== 0) return;
+    evt.preventDefault();
+    if (mode === 'erase') {
+      tryErase(evt);
+    } else {
+      beginStroke(evt);
+    }
+  }, { passive: false });
+
+  svg.addEventListener('pointermove', (evt) => {
+    // If drawing with this pointer, extend stroke
+    if (active.has(evt.pointerId)) {
+      evt.preventDefault();
+      extendStroke(evt);
+    }
+  }, { passive: false });
+
+  svg.addEventListener('pointerup', (evt) => {
+    evt.preventDefault();
+    endStroke(evt);
+  }, { passive: false });
+
+  svg.addEventListener('pointercancel', (evt) => {
+    endStroke(evt);
+  });
+
+  // Clear board (both imported and strokes)
+  clearBtn.addEventListener('click', () => {
+    imported.replaceChildren();
+    strokes.replaceChildren();
+  });
+
+  // -------- Open SVG (import and fit to board) ----------
+  openSvgInput.addEventListener('change', async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const text = await file.text();
+    importSvgText(text);
+    // reset file input so the same file can be opened again
+    openSvgInput.value = '';
+  });
+
+  function importSvgText(svgText) {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(svgText, 'image/svg+xml');
+    const root = doc.documentElement;
+
+    // Clear previous import
+    imported.replaceChildren();
+
+    // Determine source viewBox or width/height
+    let minX = 0, minY = 0, srcW = VIEW_W, srcH = VIEW_H;
+    const vb = root.getAttribute('viewBox');
+    if (vb) {
+      const parts = vb.trim().split(/\s+|,/).map(parseFloat);
+      if (parts.length === 4 && parts.every(Number.isFinite)) {
+        [minX, minY, srcW, srcH] = parts;
+      }
+    } else {
+      // fallback to width/height attributes
+      const wAttr = parseFloat(root.getAttribute('width') || `${VIEW_W}`);
+      const hAttr = parseFloat(root.getAttribute('height') || `${VIEW_H}`);
+      if (Number.isFinite(wAttr) && Number.isFinite(hAttr)) {
+        srcW = wAttr; srcH = hAttr;
+      }
+    }
+
+    // Fit imported SVG content into our board while preserving aspect ratio
+    const scale = Math.min(VIEW_W / srcW, VIEW_H / srcH);
+    const tx = (VIEW_W - srcW * scale) / 2 - minX * scale;
+    const ty = (VIEW_H - srcH * scale) / 2 - minY * scale;
+
+    // Wrap all child nodes from the imported SVG into a <g> with transform
+    const wrapper = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    wrapper.setAttribute('transform', `translate(${tx},${ty}) scale(${scale})`);
+
+    // Import nodes (skip <script> for safety)
+    for (const node of Array.from(root.childNodes)) {
+      if (node.nodeType === Node.ELEMENT_NODE) {
+        const tag = node.tagName.toLowerCase();
+        if (tag === 'script') continue;
+        wrapper.appendChild(copyNode(node));
+      }
+    }
+    imported.appendChild(wrapper);
+  }
+
+  // Deep copy foreign SVG node into our document (preserves attributes)
+  function copyNode(node) {
+    const copy = document.createElementNS('http://www.w3.org/2000/svg', node.tagName);
+    // Copy attributes
+    for (const attr of Array.from(node.attributes || [])) {
+      copy.setAttribute(attr.name, attr.value);
+    }
+    // Ensure eraser can hit strokes
+    if (copy.tagName.toLowerCase() === 'path') {
+      copy.setAttribute('pointer-events', 'stroke');
+      copy.setAttribute('vector-effect', 'non-scaling-stroke');
+    }
+    // Copy children
+    for (const child of Array.from(node.childNodes)) {
+      if (child.nodeType === Node.ELEMENT_NODE) {
+        copy.appendChild(copyNode(child));
+      } else {
+        copy.appendChild(child.cloneNode(true));
+      }
+    }
+    return copy;
+  }
+
+  // -------- Serialize current drawing to a standalone SVG ----------
+  function serializeCurrentSvg() {
+    const out = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    out.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+    out.setAttribute('version', '1.1');
+    out.setAttribute('viewBox', `0 0 ${VIEW_W} ${VIEW_H}`);
+    // Optional width/height for some viewers
+    out.setAttribute('width', `${VIEW_W}`);
+    out.setAttribute('height', `${VIEW_H}`);
+
+    // Keep transparent background and non-scaling strokes
+    const style = document.createElement('style');
+    style.textContent =
+      `svg { background: transparent; }
+       path, line, polyline, polygon, rect, circle, ellipse { vector-effect: non-scaling-stroke; }`;
+    out.appendChild(style);
+
+    // Copy imported and strokes
+    out.appendChild(imported.cloneNode(true));
+    out.appendChild(strokes.cloneNode(true));
+
+    const xml = new XMLSerializer().serializeToString(out);
+    // Include XML declaration for best compatibility
+    return `<?xml version="1.0" encoding="UTF-8"?>\n${xml}`;
+  }
+
+  // -------- Save as SVG ----------
+  saveSvgBtn.addEventListener('click', () => {
+    const svgText = serializeCurrentSvg();
+    const blob = new Blob([svgText], { type: 'image/svg+xml;charset=utf-8' });
+    const name = `whiteboard-${new Date().toISOString().replace(/[:.]/g,'-')}.svg`;
+    downloadBlob(blob, name);
+  });
+
+  // -------- Save as PNG (transparent background) ----------
+  savePngBtn.addEventListener('click', async () => {
+    const svgText = serializeCurrentSvg();
+
+    // Render SVG to an offscreen canvas, preserving transparency
+    const scale = window.devicePixelRatio || 1;
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.floor(VIEW_W * scale));
+    canvas.height = Math.max(1, Math.floor(VIEW_H * scale));
+    const ctx = canvas.getContext('2d');
+
+    // Prepare image
+    const svgBlob = new Blob([svgText], { type: 'image/svg+xml;charset=utf-8' });
+    const url = URL.createObjectURL(svgBlob);
+    try {
+      const img = await blobToImage(url);
+      // Draw scaled to canvas; background remains transparent
+      ctx.setTransform(scale, 0, 0, scale, 0, 0);
+      ctx.drawImage(img, 0, 0, VIEW_W, VIEW_H);
+      const pngBlob = dataURLtoBlob(canvas.toDataURL('image/png')); // transparent PNG
+      const name = `whiteboard-${new Date().toISOString().replace(/[:.]/g,'-')}.png`;
+      downloadBlob(pngBlob, name);
+    } catch (err) {
+      console.error('PNG export failed:', err);
+      alert('PNG export failed. Try again.');
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  });
+
+  function blobToImage(url) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = reject;
+      // Important for any potential external references (we avoid them anyway)
+      img.crossOrigin = 'anonymous';
+      img.src = url;
+    });
+  }
+
+  function dataURLtoBlob(dataURL) {
+    const parts = dataURL.split(',');
+    const mime = parts[0].match(/:(.*?);/)[1];
+    const bin = atob(parts[1]);
+    const len = bin.length;
+    const u8 = new Uint8Array(len);
+    for (let i = 0; i < len; i++) u8[i] = bin.charCodeAt(i);
+    return new Blob([u8], { type: mime });
+  }
+
+  // -------- Generic blob download with Safari fallback ----------
+  function downloadBlob(blob, filename) {
+    const a = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    a.href = url;
+    a.download = filename;
+
+    // Some older Safari versions ignore download; open in a new tab as fallback
+    const canDownload = 'download' in a;
+    if (canDownload) {
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } else {
+      // Fallback: open the blob in a new tab; user can long-press/save.
+      window.open(url, '_blank');
+      setTimeout(() => URL.revokeObjectURL(url), 4000);
+    }
+  }
+
+  // Ensure our svg has the expected viewBox
+  svg.setAttribute('viewBox', `0 0 ${VIEW_W} ${VIEW_H}`);
+})();
+</script>
+</body>
+</html>
