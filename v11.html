@@ -1,0 +1,190 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SVG Whiteboard</title>
+<style>
+    html, body {
+        margin: 0; padding: 0; height: 100%; width: 100%;
+        overflow: hidden; background: #f0f0f0;
+    }
+    #toolbar {
+        position: fixed; top: 10px; left: 10px; z-index: 10;
+        background: white; padding: 8px; border-radius: 6px;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+        display: flex; gap: 8px; align-items: center;
+    }
+    #board {
+        width: 100%; height: 100%;
+        touch-action: none; /* Important for gestures */
+    }
+    input[type="range"] { width: 80px; }
+</style>
+</head>
+<body>
+<div id="toolbar">
+    <input type="color" id="color" value="#000000">
+    <input type="range" id="stroke" min="1" max="20" value="3">
+    <select id="mode">
+        <option value="draw">Draw</option>
+        <option value="pan">Pan</option>
+        <option value="erase">Erase</option>
+    </select>
+    <button id="openBtn">Open SVG</button>
+    <button id="saveBtn">Save SVG</button>
+    <input type="file" id="fileInput" accept=".svg" style="display:none">
+</div>
+
+<svg id="board" xmlns="http://www.w3.org/2000/svg">
+    <g id="content"></g>
+</svg>
+
+<script>
+const svg = document.getElementById('board');
+const content = document.getElementById('content');
+const colorPicker = document.getElementById('color');
+const strokeSlider = document.getElementById('stroke');
+const modeSelect = document.getElementById('mode');
+const fileInput = document.getElementById('fileInput');
+
+let mode = 'draw';
+let drawing = false;
+let currentPath = null;
+let viewBox = { x: 0, y: 0, w: window.innerWidth, h: window.innerHeight };
+svg.setAttribute('viewBox', `${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}`);
+
+let lastTouches = [];
+let scale = 1;
+
+// Resize dynamically
+window.addEventListener('resize', () => {
+    viewBox.w = window.innerWidth;
+    viewBox.h = window.innerHeight;
+    svg.setAttribute('viewBox', `${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}`);
+});
+
+// Mode change
+modeSelect.addEventListener('change', e => mode = e.target.value);
+
+// Mouse/touch events
+function getPoint(evt) {
+    const pt = svg.createSVGPoint();
+    if (evt.touches && evt.touches.length > 0) {
+        pt.x = evt.touches[0].clientX;
+        pt.y = evt.touches[0].clientY;
+    } else {
+        pt.x = evt.clientX;
+        pt.y = evt.clientY;
+    }
+    const ctm = svg.getScreenCTM().inverse();
+    return pt.matrixTransform(ctm);
+}
+
+svg.addEventListener('pointerdown', e => {
+    if (mode === 'draw') {
+        drawing = true;
+        const p = getPoint(e);
+        currentPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        currentPath.setAttribute('stroke', colorPicker.value);
+        currentPath.setAttribute('stroke-width', strokeSlider.value);
+        currentPath.setAttribute('fill', 'none');
+        currentPath.setAttribute('d', `M ${p.x} ${p.y}`);
+        content.appendChild(currentPath);
+    }
+});
+
+svg.addEventListener('pointermove', e => {
+    if (drawing && mode === 'draw') {
+        const p = getPoint(e);
+        currentPath.setAttribute('d', currentPath.getAttribute('d') + ` L ${p.x} ${p.y}`);
+    }
+});
+
+svg.addEventListener('pointerup', () => drawing = false);
+
+// Erase mode
+svg.addEventListener('pointerdown', e => {
+    if (mode === 'erase' && e.target.tagName === 'path') {
+        e.target.remove();
+    }
+});
+
+// Pan & Zoom
+let lastX, lastY;
+svg.addEventListener('pointerdown', e => {
+    if (mode === 'pan') {
+        lastX = e.clientX;
+        lastY = e.clientY;
+    }
+});
+svg.addEventListener('pointermove', e => {
+    if (mode === 'pan' && e.pressure > 0) {
+        const dx = (e.clientX - lastX) * (viewBox.w / window.innerWidth);
+        const dy = (e.clientY - lastY) * (viewBox.h / window.innerHeight);
+        viewBox.x -= dx;
+        viewBox.y -= dy;
+        svg.setAttribute('viewBox', `${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}`);
+        lastX = e.clientX;
+        lastY = e.clientY;
+    }
+});
+
+// Wheel zoom (desktop)
+svg.addEventListener('wheel', e => {
+    e.preventDefault();
+    const zoomFactor = e.deltaY > 0 ? 1.1 : 0.9;
+    viewBox.w *= zoomFactor;
+    viewBox.h *= zoomFactor;
+    svg.setAttribute('viewBox', `${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}`);
+});
+
+// Pinch zoom (mobile)
+svg.addEventListener('touchmove', e => {
+    if (e.touches.length === 2) {
+        e.preventDefault();
+        const dist = Math.hypot(
+            e.touches[0].clientX - e.touches[1].clientX,
+            e.touches[0].clientY - e.touches[1].clientY
+        );
+        if (lastTouches.length === 2) {
+            const lastDist = Math.hypot(
+                lastTouches[0].clientX - lastTouches[1].clientX,
+                lastTouches[0].clientY - lastTouches[1].clientY
+            );
+            const zoomFactor = dist / lastDist;
+            viewBox.w /= zoomFactor;
+            viewBox.h /= zoomFactor;
+            svg.setAttribute('viewBox', `${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}`);
+        }
+        lastTouches = [...e.touches];
+    }
+}, { passive: false });
+
+// Open SVG
+document.getElementById('openBtn').addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', e => {
+    const file = e.target.files[0];
+    if (file) {
+        const reader = new FileReader();
+        reader.onload = evt => {
+            content.innerHTML = new DOMParser().parseFromString(evt.target.result, 'image/svg+xml').querySelector('svg').innerHTML;
+        };
+        reader.readAsText(file);
+    }
+});
+
+// Save SVG
+document.getElementById('saveBtn').addEventListener('click', () => {
+    const blob = new Blob([svg.outerHTML], { type: 'image/svg+xml' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'whiteboard.svg';
+    a.click();
+    URL.revokeObjectURL(url);
+});
+</script>
+</body>
+</html>
