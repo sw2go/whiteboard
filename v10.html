@@ -1,0 +1,526 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+<title>SVG Whiteboard – Single File</title>
+<style>
+  :root {
+    color-scheme: light dark;
+  }
+  html, body {
+    height: 100%;
+    margin: 0;
+    background: transparent; /* ensure transparency for PNG export */
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+  }
+  #toolbar {
+    position: fixed;
+    top: 8px;
+    left: 8px;
+    right: 8px;
+    z-index: 10;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    padding: 8px 10px;
+    border-radius: 10px;
+    backdrop-filter: blur(8px);
+    background: color-mix(in hsl, white 70%, transparent);
+    box-shadow: 0 8px 24px rgba(0,0,0,0.15);
+  }
+  #toolbar * {
+    font-size: 14px;
+  }
+  #eraserBadge {
+    font-weight: 700;
+    color: #b00020;
+    display: none;
+  }
+  #board {
+    position: fixed;
+    inset: 0;
+    width: 100vw;
+    height: 100vh;
+    touch-action: none; /* important: prevent browser gestures; we implement our own */
+    background: transparent; /* keep transparent for PNG export */
+  }
+  button {
+    cursor: pointer;
+    border: 1px solid rgba(0,0,0,0.2);
+    border-radius: 8px;
+    padding: 6px 10px;
+    background: white;
+  }
+  button.active {
+    background: #2563eb; /* blue */
+    color: white;
+  }
+  input[type="color"], input[type="range"], input[type="file"] {
+    cursor: pointer;
+  }
+  /* Ensure imported or drawn paths are easily erasable via stroke hit-testing */
+  svg path.stroke {
+    pointer-events: stroke;
+  }
+</style>
+</head>
+<body>
+
+<!-- Toolbar -->
+<div id="toolbar">
+  <label>Mode:</label>
+  <button id="modeDraw" class="active" title="Draw mode">Draw</button>
+  <button id="modePan" title="Pan/Zoom mode">Pan/Zoom</button>
+  <button id="modeErase" title="Erase mode">Erase</button>
+  <span id="eraserBadge">ERASER ON</span>
+
+  <label>Color: <input id="colorPicker" type="color" value="#000000" /></label>
+  <label>Width: <input id="widthSlider" type="range" min="1" max="64" value="4" /></label>
+
+  <input id="fileInput" type="file" accept=".svg,image/svg+xml" />
+  <button id="btnSaveSVG" title="Save as SVG">Save SVG</button>
+  <button id="btnExportPNG" title="Export transparent PNG">Export PNG</button>
+  <button id="btnRecenter" title="Reset pan/zoom to center">Recenter</button>
+</div>
+
+<!-- SVG Whiteboard -->
+<svg id="board" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet">
+  <!-- All transforms are applied here -->
+  <g id="viewport" transform="translate(0,0) scale(1)">
+    <!-- All content lives here -->
+    <g id="content"></g>
+  </g>
+</svg>
+
+<script>
+(() => {
+  // DOM references
+  const board = document.getElementById('board');
+  const viewport = document.getElementById('viewport');
+  const content = document.getElementById('content');
+
+  const modeDrawBtn = document.getElementById('modeDraw');
+  const modePanBtn  = document.getElementById('modePan');
+  const modeEraseBtn= document.getElementById('modeErase');
+  const eraserBadge = document.getElementById('eraserBadge');
+
+  const colorPicker = document.getElementById('colorPicker');
+  const widthSlider = document.getElementById('widthSlider');
+
+  const fileInput   = document.getElementById('fileInput');
+  const btnSaveSVG  = document.getElementById('btnSaveSVG');
+  const btnExportPNG= document.getElementById('btnExportPNG');
+  const btnRecenter = document.getElementById('btnRecenter');
+
+  // State
+  let mode = 'draw'; // 'draw' | 'pan' | 'erase'
+  let strokeColor = colorPicker.value;
+  let strokeWidth = parseFloat(widthSlider.value);
+  const transform = { tx: 0, ty: 0, s: 1 };
+
+  // Drawing state
+  let drawing = null; // {pathEl, points: [{x,y},...]}
+  // Pointer tracking for multi-touch
+  const pointers = new Map(); // id -> {clientX, clientY, svgX, svgY}
+  let pinch = null; // {startScale, anchor:{x,y}, startDist}
+
+  // === Helpers ===
+
+  // Update the viewport transform attribute
+  function applyTransform() {
+    viewport.setAttribute('transform', `translate(${transform.tx},${transform.ty}) scale(${transform.s})`);
+  }
+
+  // Convert screen (client) coords to content's user units
+  function clientToContentXY(clientX, clientY) {
+    const pt = board.createSVGPoint();
+    pt.x = clientX;
+    pt.y = clientY;
+    // Inverse of content CTM gives us content coordinates directly
+    const inv = content.getScreenCTM().inverse();
+    const p = pt.matrixTransform(inv);
+    return { x: p.x, y: p.y };
+  }
+
+  // Distance between two points
+  function dist(a, b) {
+    const dx = a.x - b.x, dy = a.y - b.y;
+    return Math.hypot(dx, dy);
+  }
+
+  // Midpoint between two points
+  function mid(a, b) {
+    return { x: (a.x + b.x)/2, y: (a.y + b.y)/2 };
+  }
+
+  // Create a new path for drawing
+  function beginStroke(x, y) {
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('class', 'stroke');
+    path.setAttribute('fill', 'none');
+    path.setAttribute('stroke', strokeColor);
+    path.setAttribute('stroke-width', strokeWidth);
+    path.setAttribute('stroke-linecap', 'round');
+    path.setAttribute('stroke-linejoin', 'round');
+    path.setAttribute('vector-effect', 'non-scaling-stroke'); // keeps width constant on zoom
+    path.setAttribute('d', `M ${x} ${y}`);
+    content.appendChild(path);
+    drawing = { pathEl: path, points: [{x, y}] };
+  }
+
+  function continueStroke(x, y) {
+    if (!drawing) return;
+    const pts = drawing.points;
+    const last = pts[pts.length - 1];
+    // Avoid too many points (min step)
+    const minStep = 0.5; // content units; adjust if needed
+    if (Math.hypot(x - last.x, y - last.y) < minStep) return;
+
+    pts.push({x, y});
+    // Simple polyline path; could be upgraded to smoothing
+    const d = drawing.points.map((p, i) => (i === 0 ? `M ${p.x} ${p.y}` : `L ${p.x} ${p.y}`)).join(' ');
+    drawing.pathEl.setAttribute('d', d);
+  }
+
+  function endStroke() {
+    drawing = null;
+  }
+
+  // Eraser: remove any path under the pointer (uses elementFromPoint on screen coords)
+  function eraseAtClientPoint(clientX, clientY) {
+    const el = document.elementFromPoint(clientX, clientY);
+    if (!el) return;
+    // If the element is (or is inside) a drawn path, remove the path element
+    if (el.tagName === 'path' && el.classList.contains('stroke') && el.ownerSVGElement === board) {
+      el.remove();
+      return;
+    }
+    // If nested (e.g., groups), try to find a path up the tree
+    let node = el;
+    while (node && node !== document) {
+      if (node.tagName === 'path' && node.classList?.contains('stroke') && node.ownerSVGElement === board) {
+        node.remove();
+        return;
+      }
+      node = node.parentNode;
+    }
+  }
+
+  // Pinch-zoom: initialize with two pointers
+  function startPinch() {
+    if (pointers.size !== 2) { pinch = null; return; }
+    const arr = Array.from(pointers.values());
+    const p1 = clientToContentXY(arr[0].clientX, arr[0].clientY);
+    const p2 = clientToContentXY(arr[1].clientX, arr[1].clientY);
+    const anchor = mid(p1, p2);
+    pinch = {
+      startScale: transform.s,
+      startDist: dist(p1, p2),
+      anchor
+    };
+  }
+
+  function updatePinch() {
+    if (!pinch || pointers.size !== 2) return;
+    const arr = Array.from(pointers.values());
+    const p1 = clientToContentXY(arr[0].clientX, arr[0].clientY);
+    const p2 = clientToContentXY(arr[1].clientX, arr[1].clientY);
+    const d = dist(p1, p2);
+    if (pinch.startDist <= 0) return;
+
+    const s1 = (d / pinch.startDist) * pinch.startScale;
+    const a = pinch.anchor;
+    // Keep anchor content point fixed on screen:
+    // (a + tx) * s = constant -> tx = const/s - a
+    const constX = (a.x + transform.tx) * transform.s;
+    const constY = (a.y + transform.ty) * transform.s;
+    transform.s = Math.max(0.05, Math.min(100, s1)); // clamp a bit
+    transform.tx = constX / transform.s - a.x;
+    transform.ty = constY / transform.s - a.y;
+    applyTransform();
+  }
+
+  // Pan with single pointer: drag in content units
+  let panLast = null; // {x,y} in content coords
+  function startPan(clientX, clientY) {
+    panLast = clientToContentXY(clientX, clientY);
+  }
+  function continuePan(clientX, clientY) {
+    if (!panLast) return;
+    const now = clientToContentXY(clientX, clientY);
+    const dx = now.x - panLast.x;
+    const dy = now.y - panLast.y;
+    transform.tx += dx;
+    transform.ty += dy;
+    panLast = now;
+    applyTransform();
+  }
+  function endPan() {
+    panLast = null;
+  }
+
+  // Update mode UI
+  function setMode(newMode) {
+    mode = newMode;
+    modeDrawBtn.classList.toggle('active', mode === 'draw');
+    modePanBtn.classList.toggle('active', mode === 'pan');
+    modeEraseBtn.classList.toggle('active', mode === 'erase');
+    eraserBadge.style.display = mode === 'erase' ? 'inline' : 'none';
+  }
+
+  // Recenter board
+  function recenter() {
+    transform.tx = 0;
+    transform.ty = 0;
+    transform.s = 1;
+    applyTransform();
+  }
+
+  // === Event wiring ===
+
+  // Mode buttons
+  modeDrawBtn.addEventListener('click', () => setMode('draw'));
+  modePanBtn.addEventListener('click', () => setMode('pan'));
+  modeEraseBtn.addEventListener('click', () => setMode('erase'));
+
+  // Color / width
+  colorPicker.addEventListener('input', (e) => { strokeColor = e.target.value; });
+  widthSlider.addEventListener('input', (e) => { strokeWidth = parseFloat(e.target.value); });
+
+  // Recenter
+  btnRecenter.addEventListener('click', recenter);
+
+  // Open SVG
+  fileInput.addEventListener('change', async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const dom = new DOMParser().parseFromString(text, 'image/svg+xml');
+      const importedSvg = dom.documentElement;
+
+      // Bring in children of the external SVG into our content group
+      // We copy shapes; we do not override our transforms.
+      const nodes = Array.from(importedSvg.childNodes);
+      nodes.forEach(node => {
+        if (node.nodeType === 1) { // ELEMENT_NODE
+          const clone = node.cloneNode(true);
+          // Ensure paths are erasable via stroke hit-testing
+          if (clone.tagName === 'path') {
+            clone.classList.add('stroke');
+            clone.setAttribute('pointer-events', 'stroke');
+            if (!clone.hasAttribute('vector-effect')) {
+              clone.setAttribute('vector-effect', 'non-scaling-stroke');
+            }
+          }
+          content.appendChild(clone);
+        }
+      });
+    } catch (err) {
+      console.error('Failed to open SVG:', err);
+      alert('Failed to open SVG file. Is it a valid SVG?');
+    } finally {
+      fileInput.value = ''; // reset
+    }
+  });
+
+  // Save SVG (standalone)
+  btnSaveSVG.addEventListener('click', () => {
+    // Clone a clean SVG for download
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+    svg.setAttribute('version', '1.1');
+    svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+    // Use viewBox to make it open nicely standalone; choose a sensible window
+    // We'll export the current viewport as the viewBox (0,0, width,height in content units)
+    // We compute a content-space window that maps to current screen window.
+    const screenW = board.clientWidth;
+    const screenH = board.clientHeight;
+    // Convert screen corners to content coords
+    const topLeft  = clientToContentXY(0, 0);
+    const bottomRight = clientToContentXY(screenW, screenH);
+    const vbX = topLeft.x;
+    const vbY = topLeft.y;
+    const vbW = bottomRight.x - topLeft.x;
+    const vbH = bottomRight.y - topLeft.y;
+    svg.setAttribute('viewBox', `${vbX} ${vbY} ${vbW} ${vbH}`);
+    // (Optional) Make it fill when opened as a file
+    svg.setAttribute('width', '100%');
+    svg.setAttribute('height', '100%');
+
+    // Copy the content (including our viewport transform so infinite pan/zoom persists)
+    const viewportClone = viewport.cloneNode(true);
+    svg.appendChild(viewportClone);
+
+    // Inline a tiny style (keeps transparency & eraser hit-testing)
+    const style = document.createElementNS('http://www.w3.org/2000/svg', 'style');
+    style.textContent = `
+      <![CDATA[
+        svg { background: transparent; }
+        path.stroke { pointer-events: stroke; }
+      ]]>
+    `;
+    svg.insertBefore(style, viewportClone);
+
+    // Serialize & download
+    const serializer = new XMLSerializer();
+    const svgString = serializer.serializeToString(svg);
+    const blob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `whiteboard-${new Date().toISOString().replace(/[:.]/g,'-')}.svg`;
+    document.body.appendChild(a);
+    a.click();
+    URL.revokeObjectURL(a.href);
+    a.remove();
+  });
+
+  // Export PNG (transparent)
+  btnExportPNG.addEventListener('click', async () => {
+    // Create a standalone SVG string of the current view area
+    const screenW = board.clientWidth;
+    const screenH = board.clientHeight;
+    const dpr = window.devicePixelRatio || 1;
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.floor(screenW * dpr));
+    canvas.height = Math.max(1, Math.floor(screenH * dpr));
+    canvas.style.width = `${screenW}px`;
+    canvas.style.height = `${screenH}px`;
+    const ctx = canvas.getContext('2d');
+
+    // Build SVG tailored to current viewBox (map to content coords)
+    const topLeft  = clientToContentXY(0, 0);
+    const bottomRight = clientToContentXY(screenW, screenH);
+    const vbX = topLeft.x;
+    const vbY = topLeft.y;
+    const vbW = bottomRight.x - topLeft.x;
+    const vbH = bottomRight.y - topLeft.y;
+
+    const serializer = new XMLSerializer();
+    const viewportString = serializer.serializeToString(viewport.cloneNode(true));
+    const svgString =
+      `<?xml version="1.0" encoding="UTF-8"?>` +
+      `<svg xmlns="http://www.w3.org/2000/svg" version="1.1" viewBox="${vbX} ${vbY} ${vbW} ${vbH}" width="${screenW}" height="${screenH}" preserveAspectRatio="xMidYMid meet">` +
+      `<style><![CDATA[svg{background:transparent} path.stroke{pointer-events:stroke}]]></style>` +
+      viewportString +
+      `</svg>`;
+
+    const blob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    await new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        ctx.clearRect(0,0,canvas.width,canvas.height);
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0); // scale by devicePixelRatio
+        // Draw; transparent by default
+        ctx.drawImage(img, 0, 0, screenW, screenH);
+        URL.revokeObjectURL(url);
+        resolve();
+      };
+      img.onerror = (e) => {
+        URL.revokeObjectURL(url);
+        reject(e);
+      };
+      img.src = url;
+    }).catch(err => {
+      console.error('PNG export failed:', err);
+      alert('PNG export failed.');
+    });
+
+    // Download PNG
+    canvas.toBlob((blob) => {
+      if (!blob) return;
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `whiteboard-${new Date().toISOString().replace(/[:.]/g,'-')}.png`;
+      document.body.appendChild(a);
+      a.click();
+      URL.revokeObjectURL(a.href);
+      a.remove();
+    }, 'image/png');
+  });
+
+  // Pointer handlers (mouse & touch via PointerEvents)
+  board.addEventListener('pointerdown', (e) => {
+    board.setPointerCapture(e.pointerId);
+    pointers.set(e.pointerId, { clientX: e.clientX, clientY: e.clientY });
+
+    if (pointers.size === 2) {
+      startPinch();
+      return;
+    }
+
+    if (mode === 'draw') {
+      const p = clientToContentXY(e.clientX, e.clientY);
+      beginStroke(p.x, p.y);
+    } else if (mode === 'pan') {
+      startPan(e.clientX, e.clientY);
+    } else if (mode === 'erase') {
+      eraseAtClientPoint(e.clientX, e.clientY);
+    }
+    e.preventDefault();
+  });
+
+  board.addEventListener('pointermove', (e) => {
+    const rec = pointers.get(e.pointerId);
+    pointers.set(e.pointerId, { clientX: e.clientX, clientY: e.clientY });
+
+    if (pointers.size === 2) {
+      updatePinch();
+      e.preventDefault();
+      return;
+    }
+
+    if (mode === 'draw') {
+      if (drawing) {
+        const p = clientToContentXY(e.clientX, e.clientY);
+        continueStroke(p.x, p.y);
+      }
+    } else if (mode === 'pan') {
+      continuePan(e.clientX, e.clientY);
+    } else if (mode === 'erase') {
+      eraseAtClientPoint(e.clientX, e.clientY);
+    }
+    e.preventDefault();
+  });
+
+  function endPointer(e) {
+    board.releasePointerCapture?.(e.pointerId);
+    pointers.delete(e.pointerId);
+    if (pointers.size < 2) pinch = null;
+
+    if (mode === 'draw') {
+      endStroke();
+    } else if (mode === 'pan') {
+      endPan();
+    }
+  }
+  board.addEventListener('pointerup', endPointer);
+  board.addEventListener('pointercancel', endPointer);
+  board.addEventListener('pointerleave', (e) => {
+    // If drawing and pointer leaves the svg, end gracefully
+    if (mode === 'draw') endStroke();
+  });
+
+  // Resize: SVG fills viewport via CSS; no special logic required.
+  // Still, if needed in future, you can handle orientationchange or resize events.
+
+  // Keyboard: quick toggles (optional)
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'e') setMode('erase');
+    else if (e.key === 'p' || e.key === ' ') setMode('pan');
+    else if (e.key === 'd') setMode('draw');
+    else if (e.key === '0') recenter();
+  });
+
+  // Initial transform apply
+  applyTransform();
+
+  // Prevent context menu on long press/right click to avoid interference
+  board.addEventListener('contextmenu', (e) => e.preventDefault());
+})();
+</script>
+</body>
+</html>
