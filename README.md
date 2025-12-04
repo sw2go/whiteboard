@@ -128,6 +128,7 @@ Exact feature list:
 - pan to have infinit board, on pan keep cntent locked to the finger
 - erase when touching or crossing a line
 - consider screen/viewbox conversions on pan and zoom
+- no grid
 
 Behavior expectations:
 - SVG file openable standalone in a browser after download
