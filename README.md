@@ -2,11 +2,110 @@
 
 play with it:
 https://sw2go.github.io/whiteboard/index.html
+https://sw2go.github.io/whiteboard/v12.html
+https://sw2go.github.io/whiteboard/v11.html
+https://sw2go.github.io/whiteboard/v10.html
 https://sw2go.github.io/whiteboard/v8.html
 
+##V12 Prompt:
+
+Create HTML/JS single file sample code for SVG based whiteboard.
+
+Ensure the code is working 100% and fullfilling all below requirements.
+
+Environment details:
+- Pure HTML/JS only
+- Run in any modern browser (Chrome, Edge, Safari) on PC, Tablet and Mobile (Android and I-Phone)
+
+Exact feature list:
+- open SVG
+- save SVG
+- color picker
+- stroke witdh slider
+- mode options: draw, pan, erase
+- multi-touch
+- on mobile zoom with 2 fingers, freeze the reference frame at pinch start
+- on pc zoom with mouse wheel
+- zoom at current mouse or finger location  
+- pan to have infinit board, on pan keep content locked to the finger
+
+- erase when touching or crossing a line
+- consider screen/viewbox conversions on pan and zoom
+- no grid
+
+Behavior expectations:
+- SVG file openable standalone in a browser after download
+- Board resize dynamically with the window
+
+Testing target:
+- Desktop 
+- Mobile (iPhone and Android)
+- Single-touch gestures (drawing with one finger only)
+
+##V11 Prompt:
+
+Create HTML/JS single file sample code for SVG based whiteboard.
+
+Ensure the code is working 100% and fullfilling all below requirements.
+
+Environment details:
+- Pure HTML/JS only
+- Run in any modern browser (Chrome, Edge, Safari) on PC, Tablet and Mobile (Android and I-Phone)
+
+Exact feature list:
+- open SVG
+- save SVG
+- color picker
+- stroke witdh slider
+- mode options: draw, pan, erase
+- multi-touch
+- on mobile zoom with 2 fingers, on pc zoom with mouse wheel, zoom at current mouse or finger location  
+- pan to have infinit board
+- erase when touching or crossing a line
+- consider screen/viewbox conversions on pan and zoom
+
+Behavior expectations:
+- SVG file openable standalone in a browser after download
+- Board resize dynamically with the window
+
+Testing target:
+- Desktop 
+- Mobile (iPhone and Android)
+- Single-touch gestures (drawing with one finger only)
+
+##V10 Prompt:
+
+Create HTML/JS single file sample code for SVG based whiteboard.
+
+Ensure the code is working 100% and fullfilling all below requirements.
+
+Environment details:
+- Pure HTML/JS only
+- Run in any modern browser (Chrome, Edge, Safari) on PC, Tablet and Mobile (Android and I-Phone)
+
+Exact feature list:
+- open SVG
+- save SVG
+- save PNG (with transparent background)
+- color picker
+- stroke witdh slider
+- display erase mode
+- multi-touch
+- pan/zoom and consider screen/viewbox conversions 
+- move function, to move board center (infinit board)
+
+Behavior expectations:
+- SVG file openable standalone in a browser after download
+- PNG export with transparent background
+- Board resize dynamically with the window
+
+Testing target:
+- Desktop 
+- Mobile (iPhone and Android)
+- Single-touch gestures (drawing with one finger only)
 
 
-V8 Prompt:
+##V8 Prompt:
 
 Create HTML/JS sample code for SVG based whiteboard.
 
@@ -43,101 +142,3 @@ Testing target:
 - Mobile (iPhone and Android)
 - Single-touch gestures (drawing with one finger only)
 
-V10 Prompt:
-
-Create HTML/JS single file sample code for SVG based whiteboard.
-
-Ensure the code is working 100% and fullfilling all below requirements.
-
-Environment details:
-- Pure HTML/JS only
-- Run in any modern browser (Chrome, Edge, Safari) on PC, Tablet and Mobile (Android and I-Phone)
-
-Exact feature list:
-- open SVG
-- save SVG
-- save PNG (with transparent background)
-- color picker
-- stroke witdh slider
-- display erase mode
-- multi-touch
-- pan/zoom and consider screen/viewbox conversions 
-- move function, to move board center (infinit board)
-
-Behavior expectations:
-- SVG file openable standalone in a browser after download
-- PNG export with transparent background
-- Board resize dynamically with the window
-
-Testing target:
-- Desktop 
-- Mobile (iPhone and Android)
-- Single-touch gestures (drawing with one finger only)
-
-
-V11 Prompt:
-
-Create HTML/JS single file sample code for SVG based whiteboard.
-
-Ensure the code is working 100% and fullfilling all below requirements.
-
-Environment details:
-- Pure HTML/JS only
-- Run in any modern browser (Chrome, Edge, Safari) on PC, Tablet and Mobile (Android and I-Phone)
-
-Exact feature list:
-- open SVG
-- save SVG
-- color picker
-- stroke witdh slider
-- mode options: draw, pan, erase
-- multi-touch
-- on mobile zoom with 2 fingers, on pc zoom with mouse wheel, zoom at current mouse or finger location  
-- pan to have infinit board
-- erase when touching or crossing a line
-- consider screen/viewbox conversions on pan and zoom
-
-Behavior expectations:
-- SVG file openable standalone in a browser after download
-- Board resize dynamically with the window
-
-Testing target:
-- Desktop 
-- Mobile (iPhone and Android)
-- Single-touch gestures (drawing with one finger only)
-
-
-V12 Prompt:
-
-Create HTML/JS single file sample code for SVG based whiteboard.
-
-Ensure the code is working 100% and fullfilling all below requirements.
-
-Environment details:
-- Pure HTML/JS only
-- Run in any modern browser (Chrome, Edge, Safari) on PC, Tablet and Mobile (Android and I-Phone)
-
-Exact feature list:
-- open SVG
-- save SVG
-- color picker
-- stroke witdh slider
-- mode options: draw, pan, erase
-- multi-touch
-- on mobile zoom with 2 fingers, freeze the reference frame at pinch start
-- on pc zoom with mouse wheel
-- zoom at current mouse or finger location  
-- pan to have infinit board, on pan keep content locked to the finger
-
-- erase when touching or crossing a line
-- consider screen/viewbox conversions on pan and zoom
-- no grid
-
-Behavior expectations:
-- SVG file openable standalone in a browser after download
-- Board resize dynamically with the window
-
-Testing target:
-- Desktop 
-- Mobile (iPhone and Android)
-- Single-touch gestures (drawing with one finger only)
