@@ -124,8 +124,11 @@ Exact feature list:
 - stroke witdh slider
 - mode options: draw, pan, erase
 - multi-touch
-- on mobile zoom with 2 fingers, on pc zoom with mouse wheel, zoom at current mouse or finger location  
-- pan to have infinit board, on pan keep cntent locked to the finger
+- on mobile zoom with 2 fingers, freeze the reference frame at pinch start
+- on pc zoom with mouse wheel
+- zoom at current mouse or finger location  
+- pan to have infinit board, on pan keep content locked to the finger
+
 - erase when touching or crossing a line
 - consider screen/viewbox conversions on pan and zoom
 - no grid
