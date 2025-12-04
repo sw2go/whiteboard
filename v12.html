@@ -1,0 +1,528 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+<title>SVG Whiteboard - Single File</title>
+<style>
+  :root {
+    color-scheme: light dark;
+  }
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    overflow: hidden; /* prevent browser scrolling while interacting */
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+  }
+  #toolbar {
+    position: fixed;
+    top: 8px;
+    left: 8px;
+    right: 8px;
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: color-mix(in srgb, #fff 85%, transparent);
+    backdrop-filter: blur(6px);
+    box-shadow: 0 4px 16px rgba(0,0,0,0.1);
+    z-index: 10;
+  }
+  #toolbar label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 14px;
+    white-space: nowrap;
+  }
+  #mode {
+    font-size: 14px;
+  }
+  #board {
+    position: fixed;
+    inset: 0;
+    width: 100vw;
+    height: 100vh;
+    touch-action: none; /* critical: allow custom pan/zoom/pinch */
+    background: #f7f7f9;
+  }
+  /* Optional grid – helps orientation on infinite canvas */
+  .grid-bg {
+    fill: url(#gridPattern);
+  }
+  /* helper for buttons and inputs */
+  button, input, select {
+    font-size: 14px;
+  }
+</style>
+</head>
+<body>
+
+<div id="toolbar">
+  <label>Mode:
+    <select id="mode">
+      <option value="draw">Draw</option>
+      <option value="pan">Pan</option>
+      <option value="erase">Erase</option>
+    </select>
+  </label>
+
+  <label>Color:
+    <input id="color" type="color" value="#222222" />
+  </label>
+
+  <label>Stroke:
+    <input id="width" type="range" min="1" max="40" value="4" />
+    <span id="widthVal">4px</span>
+  </label>
+
+  <label>Open SVG:
+    <input id="openSvg" type="file" accept="image/svg+xml,.svg" />
+  </label>
+
+  <button id="saveSvg">Save SVG</button>
+</div>
+
+<svg id="board" xmlns="http://www.w3.org/2000/svg">
+  <!-- Grid pattern for visual reference on infinite panning (optional) -->
+  <defs>
+    <pattern id="gridPattern" width="40" height="40" patternUnits="userSpaceOnUse">
+      <rect width="40" height="40" fill="#ffffff"/>
+      <path d="M40 0H0V40" stroke="#e9e9ee" stroke-width="1"/>
+      <path d="M200 0H0" stroke="#e0e0e8" stroke-width="1"/>
+      <path d="M0 200V0" stroke="#e0e0e8" stroke-width="1"/>
+    </pattern>
+  </defs>
+  <!-- Background rect to show optional grid and to guarantee hit-testing -->
+  <rect class="grid-bg" x="-100000" y="-100000" width="200000" height="200000" />
+
+  <!-- Drawing content lives inside this group; we pan/zoom it via transform matrix -->
+  <g id="content" transform="matrix(1,0,0,1,0,0)"></g>
+</svg>
+
+<script>
+(() => {
+  const svg = document.getElementById('board');
+  const content = document.getElementById('content');
+  const modeSel = document.getElementById('mode');
+  const colorInput = document.getElementById('color');
+  const widthInput = document.getElementById('width');
+  const widthVal = document.getElementById('widthVal');
+  const openInput = document.getElementById('openSvg');
+  const saveBtn = document.getElementById('saveSvg');
+
+  // Current drawing/interaction state
+  let mode = modeSel.value;          // 'draw' | 'pan' | 'erase'
+  let drawColor = colorInput.value;
+  let drawWidth = parseFloat(widthInput.value);
+  widthVal.textContent = `${drawWidth}px`;
+
+  // Pan/Zoom transform state (matrix s 0 0 s tx ty)
+  let scale = 1;           // zoom
+  let tx = 0;              // translateX (screen px)
+  let ty = 0;              // translateY (screen px)
+  const MIN_SCALE = 0.2;
+  const MAX_SCALE = 12;
+
+  function applyTransform() {
+    content.setAttribute('transform', `matrix(${scale},0,0,${scale},${tx},${ty})`);
+  }
+
+  // Pointer tracking
+  const pointers = new Map(); // pointerId -> {x,y}
+  let drawingPath = null;     // current SVGPathElement when drawing
+  let lastDrawWorldPt = null; // last world point while drawing
+  let lastEraseScreenPt = null; // last screen point while erasing (segment crossing)
+  let lastPanScreenPt = null;   // last screen point while panning
+  let lastPinchDist = null;     // previous pinch distance in screen px
+
+  // Utility: convert client (screen) to world coords (content <g> local coordinates)
+  function clientToWorld(x, y) {
+    const pt = svg.createSVGPoint();
+    pt.x = x; pt.y = y;
+    const inv = content.getScreenCTM().inverse();
+    return pt.matrixTransform(inv);
+  }
+
+  // Utility: world to screen
+  function worldToScreen(x, y) {
+    const pt = svg.createSVGPoint();
+    pt.x = x; pt.y = y;
+    const m = content.getScreenCTM();
+    return pt.matrixTransform(m);
+  }
+
+  // Wheel zoom (desktop): zoom at mouse position
+  svg.addEventListener('wheel', (e) => {
+    // Only zoom when not over toolbar
+    e.preventDefault();
+    const rect = svg.getBoundingClientRect();
+    const clientX = e.clientX;
+    const clientY = e.clientY;
+
+    const zoomFactor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+    const newScale = clamp(scale * zoomFactor, MIN_SCALE, MAX_SCALE);
+
+    // Anchor at current pointer: get corresponding world coordinate before updating
+    const world = clientToWorld(clientX, clientY);
+    const screen = { x: clientX, y: clientY };
+
+    // Update transform to keep world under same screen coord:
+    // screen = newScale * world + (tx', ty') => t' = screen - newScale*world
+    scale = newScale;
+    tx = screen.x - scale * world.x;
+    ty = screen.y - scale * world.y;
+    applyTransform();
+  }, { passive: false });
+
+  // Mode UI bindings
+  modeSel.addEventListener('change', () => { mode = modeSel.value; });
+  colorInput.addEventListener('input', () => { drawColor = colorInput.value; });
+  widthInput.addEventListener('input', () => {
+    drawWidth = parseFloat(widthInput.value);
+    widthVal.textContent = `${drawWidth}px`;
+  });
+
+  // Pointer events
+  svg.addEventListener('pointerdown', (e) => {
+    // Ignore toolbar pointer events
+    if (e.target.closest('#toolbar')) return;
+
+    svg.setPointerCapture(e.pointerId);
+    const p = { x: e.clientX, y: e.clientY };
+    pointers.set(e.pointerId, p);
+
+    if (mode === 'draw' && pointers.size === 1) {
+      const w = clientToWorld(p.x, p.y);
+      drawingPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      drawingPath.setAttribute('fill', 'none');
+      drawingPath.setAttribute('stroke', drawColor);
+      drawingPath.setAttribute('stroke-width', drawWidth);
+      drawingPath.setAttribute('stroke-linecap', 'round');
+      drawingPath.setAttribute('stroke-linejoin', 'round');
+      // Non-scaling stroke so brush width remains visually constant while zooming
+      drawingPath.setAttribute('vector-effect', 'non-scaling-stroke');
+      drawingPath.setAttribute('d', `M ${w.x} ${w.y}`);
+      content.appendChild(drawingPath);
+      lastDrawWorldPt = w;
+    } else if (mode === 'erase' && pointers.size === 1) {
+      lastEraseScreenPt = p;
+      // Optionally erase if tap is near any path immediately
+      eraseNearSegment(lastEraseScreenPt, lastEraseScreenPt);
+    } else if (pointers.size === 1 && mode === 'pan') {
+      lastPanScreenPt = p;
+    } else if (pointers.size === 2) {
+      // Begin pinch-to-zoom (multi-touch)
+      const pts = Array.from(pointers.values());
+      lastPinchDist = distance(pts[0], pts[1]);
+    }
+  });
+
+  svg.addEventListener('pointermove', (e) => {
+    if (!pointers.has(e.pointerId)) return;
+    const prev = pointers.get(e.pointerId);
+    const curr = { x: e.clientX, y: e.clientY };
+    pointers.set(e.pointerId, curr);
+
+    // Two-finger gesture: pinch zoom with center anchoring (supports pan while pinching)
+    if (pointers.size >= 2) {
+      const pts = Array.from(pointers.values());
+      const c = midpoint(pts[0], pts[1]);             // current screen center
+      const dCurr = distance(pts[0], pts[1]);
+
+      // Compute incremental zoom ratio vs previous frame
+      if (lastPinchDist == null) lastPinchDist = dCurr;
+      let zoomRatio = dCurr / Math.max(1, lastPinchDist);
+      if (!isFinite(zoomRatio) || zoomRatio <= 0) zoomRatio = 1;
+
+      const newScale = clamp(scale * zoomRatio, MIN_SCALE, MAX_SCALE);
+
+      // anchor world under current center
+      const worldAtCenter = clientToWorld(c.x, c.y);
+      scale = newScale;
+      tx = c.x - scale * worldAtCenter.x;
+      ty = c.y - scale * worldAtCenter.y;
+
+      lastPinchDist = dCurr;
+      applyTransform();
+      return;
+    }
+
+    // Single-pointer interactions
+    if (mode === 'draw' && drawingPath && lastDrawWorldPt) {
+      const w = clientToWorld(curr.x, curr.y);
+      // Append line segment to current path
+      const d = drawingPath.getAttribute('d');
+      drawingPath.setAttribute('d', d + ` L ${w.x} ${w.y}`);
+      lastDrawWorldPt = w;
+    } else if (mode === 'pan' && lastPanScreenPt) {
+      // Translate by screen delta to keep content locked to finger
+      const dx = curr.x - lastPanScreenPt.x;
+      const dy = curr.y - lastPanScreenPt.y;
+      tx += dx;
+      ty += dy;
+      lastPanScreenPt = curr;
+      applyTransform();
+    } else if (mode === 'erase' && lastEraseScreenPt) {
+      // Erase when crossing/touching any line: check segment from last to current
+      eraseNearSegment(lastEraseScreenPt, curr);
+      lastEraseScreenPt = curr;
+    }
+  });
+
+  svg.addEventListener('pointerup', (e) => {
+    pointers.delete(e.pointerId);
+    if (mode === 'draw') {
+      drawingPath = null;
+      lastDrawWorldPt = null;
+    }
+    if (mode === 'pan') {
+      lastPanScreenPt = null;
+    }
+    if (mode === 'erase') {
+      lastEraseScreenPt = null;
+    }
+    if (pointers.size < 2) {
+      lastPinchDist = null;
+    }
+    try { svg.releasePointerCapture(e.pointerId); } catch {}
+  });
+
+  svg.addEventListener('pointercancel', (e) => {
+    pointers.delete(e.pointerId);
+    drawingPath = null;
+    lastDrawWorldPt = null;
+    lastPanScreenPt = null;
+    lastEraseScreenPt = null;
+    lastPinchDist = null;
+    try { svg.releasePointerCapture(e.pointerId); } catch {}
+  });
+
+  // Open SVG: load paths into content group
+  openInput.addEventListener('change', async (e) => {
+    const file = openInput.files?.[0];
+    if (!file) return;
+    const text = await file.text();
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(text, 'image/svg+xml');
+    const imported = doc.documentElement.cloneNode(true);
+
+    // Clear current content
+    while (content.firstChild) content.removeChild(content.firstChild);
+
+    // Import all shapes into our content group (flatten)
+    // Keep basic elements: path, polyline, line, rect, circle, ellipse, polygon
+    const selector = 'path,polyline,line,rect,circle,ellipse,polygon';
+    const nodes = imported.querySelectorAll(selector);
+    if (nodes.length === 0) {
+      // If no shapes, copy all children (best effort)
+      const children = imported.children;
+      for (let i = 0; i < children.length; i++) {
+        content.appendChild(document.importNode(children[i], true));
+      }
+    } else {
+      nodes.forEach(n => {
+        const clone = document.importNode(n, true);
+        // ensure non-scaling stroke for consistency
+        if (!clone.getAttribute('vector-effect')) {
+          clone.setAttribute('vector-effect', 'non-scaling-stroke');
+        }
+        content.appendChild(clone);
+      });
+    }
+
+    // Reset transform to default (optional)
+    scale = 1; tx = 0; ty = 0; applyTransform();
+  });
+
+  // Save SVG: generate standalone static SVG with current viewBox framing the visible world
+  saveBtn.addEventListener('click', () => {
+    const rect = svg.getBoundingClientRect();
+    const viewportW = Math.round(rect.width);
+    const viewportH = Math.round(rect.height);
+
+    // Compute world-area visible under current transform
+    const worldX = (-tx) / scale;
+    const worldY = (-ty) / scale;
+    const worldW = viewportW / scale;
+    const worldH = viewportH / scale;
+
+    // Build SVG string with visible viewBox and current content (without runtime transforms)
+    let inner = '';
+    content.childNodes.forEach(node => {
+      if (node.nodeType === Node.ELEMENT_NODE) {
+        // Clone element to string without content group's transform
+        inner += node.outerHTML + '\n';
+      }
+    });
+
+    const svgText =
+`<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="${viewportW}"
+     height="${viewportH}"
+     viewBox="${worldX} ${worldY} ${worldW} ${worldH}">
+${inner}</svg>`;
+
+    const blob = new Blob([svgText], { type: 'image/svg+xml' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const ts = new Date().toISOString().replace(/[:.]/g, '-');
+    a.download = `whiteboard-${ts}.svg`;
+    a.href = url;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  });
+
+  // ----- Eraser logic -----
+  // Remove any path whose sampled segments come within threshold px to the erase segment
+  function eraseNearSegment(screenA, screenB) {
+    const thresholdPx = Math.max(6, drawWidth * 0.9); // sensitivity; uses current stroke as eraser
+    const eraseSeg = { a: screenA, b: screenB };
+
+    const paths = Array.from(content.querySelectorAll('path, polyline, line'));
+    for (const path of paths) {
+      if (intersectsPathScreen(path, eraseSeg, thresholdPx)) {
+        path.remove();
+        // stop after first hit to avoid erasing too much in one tiny move
+        break;
+      }
+    }
+  }
+
+  // Determine if eraser segment intersects/touches path in screen coordinates
+  function intersectsPathScreen(path, eraseSeg, thresholdPx) {
+    // get total length and sample
+    let totalLen = 0;
+    let isPath = false;
+
+    if (path.tagName.toLowerCase() === 'path') {
+      isPath = true;
+      totalLen = path.getTotalLength();
+    } else {
+      // For polyline/line, approximate via path conversion using getBBox sampling
+      isPath = true;
+      try {
+        // Create a temporary path from polyline/line data
+        const temp = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        temp.setAttribute('d', toPathD(path));
+        totalLen = temp.getTotalLength();
+        path = temp; // sample using temp path (screen CTM will still be based on original if needed)
+      } catch {
+        // fallback bounding-box proximity
+        const bbox = path.getBBox();
+        const corners = [
+          worldToScreen(bbox.x, bbox.y),
+          worldToScreen(bbox.x + bbox.width, bbox.y),
+          worldToScreen(bbox.x, bbox.y + bbox.height),
+          worldToScreen(bbox.x + bbox.width, bbox.y + bbox.height),
+        ];
+        // Quick check: if segment passes near bbox center
+        const center = {
+          x: (corners[0].x + corners[1].x + corners[2].x + corners[3].x) / 4,
+          y: (corners[0].y + corners[1].y + corners[2].y + corners[3].y) / 4
+        };
+        const d = pointToSegmentDistance(center, eraseSeg.a, eraseSeg.b);
+        return d <= thresholdPx;
+      }
+    }
+
+    const step = Math.max(2, totalLen / 200); // sampling resolution
+    const m = path.getScreenCTM();
+    let prevPt = path.getPointAtLength(0);
+    prevPt = applyMatrix(prevPt, m);
+    for (let l = step; l <= totalLen; l += step) {
+      let currPt = path.getPointAtLength(l);
+      currPt = applyMatrix(currPt, m);
+      // Distance between two segments: erase segment and this path segment
+      const d = segmentDistance(prevPt, currPt, eraseSeg.a, eraseSeg.b);
+      if (d <= thresholdPx) return true;
+      prevPt = currPt;
+    }
+    return false;
+  }
+
+  function applyMatrix(pt, m) {
+    return { x: m.a * pt.x + m.c * pt.y + m.e, y: m.b * pt.x + m.d * pt.y + m.f };
+  }
+
+  // Convert polyline/line to path 'd'
+  function toPathD(el) {
+    const tag = el.tagName.toLowerCase();
+    if (tag === 'line') {
+      const x1 = parseFloat(el.getAttribute('x1') || '0');
+      const y1 = parseFloat(el.getAttribute('y1') || '0');
+      const x2 = parseFloat(el.getAttribute('x2') || '0');
+      const y2 = parseFloat(el.getAttribute('y2') || '0');
+      return `M ${x1} ${y1} L ${x2} ${y2}`;
+    }
+    if (tag === 'polyline' || tag === 'polygon') {
+      const points = (el.getAttribute('points') || '').trim().split(/[\s,]+/).map(Number);
+      if (points.length < 4) return '';
+      let d = `M ${points[0]} ${points[1]}`;
+      for (let i = 2; i < points.length; i += 2) {
+        d += ` L ${points[i]} ${points[i+1]}`;
+      }
+      if (tag === 'polygon') d += ' Z';
+      return d;
+    }
+    return '';
+  }
+
+  // Geometry helpers
+  function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
+  function midpoint(a, b) { return { x: (a.x + b.x)/2, y: (a.y + b.y)/2 }; }
+  function distance(a, b) {
+    const dx = a.x - b.x, dy = a.y - b.y; return Math.hypot(dx, dy);
+  }
+  function segmentDistance(a1, a2, b1, b2) {
+    // Minimum distance between segments a1-a2 and b1-b2
+    const d1 = pointToSegmentDistance(a1, b1, b2);
+    const d2 = pointToSegmentDistance(a2, b1, b2);
+    const d3 = pointToSegmentDistance(b1, a1, a2);
+    const d4 = pointToSegmentDistance(b2, a1, a2);
+    // If segments cross, distance is 0 — detect by orientation test
+    if (segmentsIntersect(a1, a2, b1, b2)) return 0;
+    return Math.min(d1, d2, d3, d4);
+  }
+  function pointToSegmentDistance(p, a, b) {
+    const vx = b.x - a.x, vy = b.y - a.y;
+    const wx = p.x - a.x, wy = p.y - a.y;
+    const c1 = vx * wx + vy * wy;
+    if (c1 <= 0) return Math.hypot(p.x - a.x, p.y - a.y);
+    const c2 = vx * vx + vy * vy;
+    if (c2 <= c1) return Math.hypot(p.x - b.x, p.y - b.y);
+    const t = c1 / c2;
+    const proj = { x: a.x + t * vx, y: a.y + t * vy };
+    return Math.hypot(p.x - proj.x, p.y - proj.y);
+  }
+  function segmentsIntersect(p1, p2, p3, p4) {
+    // Standard orientation test
+    const o1 = orient(p1, p2, p3);
+    const o2 = orient(p1, p2, p4);
+    const o3 = orient(p3, p4, p1);
+    const o4 = orient(p3, p4, p2);
+    if (o1*o2 < 0 && o3*o4 < 0) return true;
+    return false;
+  }
+  function orient(a, b, c) {
+    const v = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+    return v;
+  }
+
+  // Resize handler (board resizes with window)
+  window.addEventListener('resize', () => {
+    // No special handling needed: svg occupies full viewport
+    // Optional: could adjust grid pattern scale here if desired.
+  });
+
+  // Initialize
+  applyTransform();
+})();
+</script>
+
+</body>
+</html>
