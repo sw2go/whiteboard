@@ -105,3 +105,35 @@ Testing target:
 - Desktop 
 - Mobile (iPhone and Android)
 - Single-touch gestures (drawing with one finger only)
+
+
+V12 Prompt:
+
+Create HTML/JS single file sample code for SVG based whiteboard.
+
+Ensure the code is working 100% and fullfilling all below requirements.
+
+Environment details:
+- Pure HTML/JS only
+- Run in any modern browser (Chrome, Edge, Safari) on PC, Tablet and Mobile (Android and I-Phone)
+
+Exact feature list:
+- open SVG
+- save SVG
+- color picker
+- stroke witdh slider
+- mode options: draw, pan, erase
+- multi-touch
+- on mobile zoom with 2 fingers, on pc zoom with mouse wheel, zoom at current mouse or finger location  
+- pan to have infinit board, on pan keep cntent locked to the finger
+- erase when touching or crossing a line
+- consider screen/viewbox conversions on pan and zoom
+
+Behavior expectations:
+- SVG file openable standalone in a browser after download
+- Board resize dynamically with the window
+
+Testing target:
+- Desktop 
+- Mobile (iPhone and Android)
+- Single-touch gestures (drawing with one finger only)

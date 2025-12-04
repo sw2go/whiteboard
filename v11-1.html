@@ -19,7 +19,7 @@
       margin: 0;
       padding: 0;
       height: 100%;
-      overflow: hidden; /* keep the app full screen */
+      overflow: hidden;
       background: #ffffff;
       font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
       -webkit-user-select: none;
@@ -74,13 +74,13 @@
       color: #444;
     }
 
-    /* Make the SVG fill the window, and disable native gestures */
+    /* SVG fills the window and uses custom gestures */
     #board {
       position: fixed;
       inset: 0;
       width: 100vw;
       height: 100vh;
-      background: #fff; /* “whiteboard” */
+      background: #fff;
       touch-action: none; /* we implement our own gestures */
       cursor: crosshair;
     }
@@ -90,7 +90,7 @@
     #board.mode-pan.dragging { cursor: grabbing; }
     #board.mode-erase { cursor: cell; }
 
-    /* Make strokes hit-testable by “touching/crossing” (erase) */
+    /* Make strokes hit-testable with pointer-events: stroke */
     #content path, #content polyline, #content line {
       pointer-events: stroke;
     }
@@ -128,9 +128,7 @@
   <svg id="board" xmlns="http://www.w3.org/2000/svg"
        xmlns:xlink="http://www.w3.org/1999/xlink"
        viewBox="0 0 1000 1000" preserveAspectRatio="none">
-    <!-- All drawings live here -->
     <g id="content"></g>
-    <!-- UI overlay (eraser marker, previews…) -->
     <g id="overlay"></g>
   </svg>
 
@@ -155,11 +153,14 @@
     let mode = 'draw'; // 'draw' | 'pan' | 'erase'
     let drawingByPointer = new Map(); // pointerId -> { path, lastSVG }
     let activePointers = new Map();   // pointerId -> { lastScreen, lastSVG }
-    let viewBox = { x:0, y:0, w:1000, h:1000 }; // track for math
+    let viewBox = { x:0, y:0, w:1000, h:1000 };
 
     let pinchStart = null; // { id1, id2, vbox, p1Start, p2Start, anchorSVG, distStart }
 
-    // Initialize width label
+    // For fast pan, cache screen->SVG scale (SVG units per screen pixel)
+    let pxScaleX = viewBox.w / svg.clientWidth;
+    let pxScaleY = viewBox.h / svg.clientHeight;
+
     widthVal.textContent = `${widthInput.value} px`;
 
     // ----- Helpers -----
@@ -180,6 +181,9 @@
 
     function applyViewBox() {
       svg.setAttribute('viewBox', `${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}`);
+      // update scale cache
+      pxScaleX = viewBox.w / svg.clientWidth;
+      pxScaleY = viewBox.h / svg.clientHeight;
       updateStatus();
     }
 
@@ -216,7 +220,6 @@
       p.setAttribute('stroke-linecap', 'round');
       p.setAttribute('stroke-linejoin', 'round');
       p.setAttribute('vector-effect', 'non-scaling-stroke'); // keep width consistent visually
-      // Crucial: allow stroke hit-testing (for erasing)
       p.style.pointerEvents = 'stroke';
       return p;
     }
@@ -231,21 +234,14 @@
       return Math.sqrt(dx*dx + dy*dy);
     }
 
-    function forEachStrokeElement(cb) {
-      const elems = content.querySelectorAll('path, polyline, line');
-      elems.forEach(cb);
-    }
-
-    // Remove stroke under a screen point, by hit-testing
     function eraseAtScreenPoint(sx, sy) {
-      // Use elementsFromPoint to get stack; find topmost stroke in #content
       const stack = document.elementsFromPoint(sx, sy);
       for (const el of stack) {
         if (!el || !(el instanceof Element)) continue;
         if (el.parentElement && el.parentElement.id === 'content' &&
             (el.tagName === 'path' || el.tagName === 'polyline' || el.tagName === 'line')) {
           el.remove();
-          return true; // removed something
+          return true;
         }
       }
       return false;
@@ -276,12 +272,10 @@
       const doc = parser.parseFromString(text, 'image/svg+xml');
 
       const root = doc.documentElement;
-      // Replace current content with loaded shapes
       content.innerHTML = '';
       let nodesToImport = [];
 
       if (root.tagName.toLowerCase() === 'svg') {
-        // copy viewBox if present
         const vb = root.getAttribute('viewBox');
         if (vb) {
           const [x,y,w,h] = vb.split(/[ ,]+/).map(Number);
@@ -290,17 +284,14 @@
             applyViewBox();
           }
         }
-        // collect drawable children
         nodesToImport = Array.from(root.childNodes);
       } else {
         nodesToImport = Array.from(doc.childNodes);
       }
 
       for (const node of nodesToImport) {
-        // import only element nodes that are typical drawing elements or groups
         if (node.nodeType === 1 /*Element*/) {
           const imported = document.importNode(node, true);
-          // If it's a full <svg>, unwrap its children into #content
           if (imported.tagName.toLowerCase() === 'svg') {
             Array.from(imported.childNodes).forEach(ch => {
               if (ch.nodeType === 1) content.appendChild(ch);
@@ -314,21 +305,18 @@
 
     // ----- Save SVG -----
     function serializeDrawingAsSVG() {
-      // Create a minimal standalone SVG: same viewBox and current #content children
       const tmp = document.createElementNS(ns, 'svg');
       tmp.setAttribute('xmlns', ns);
       tmp.setAttribute('xmlns:xlink', 'http://www.w3.org/1999/xlink');
       tmp.setAttribute('viewBox', `${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}`);
-      tmp.setAttribute('width', '1000');  // nominal export size (optional)
+      tmp.setAttribute('width', '1000');
       tmp.setAttribute('height', '1000');
       tmp.setAttribute('preserveAspectRatio', 'xMidYMid meet');
 
-      // Clone the content group into export
       const exportContent = content.cloneNode(true);
       exportContent.id = 'content';
       tmp.appendChild(exportContent);
 
-      // Optional: lightweight style inside export to preserve non-scaling-stroke feel
       const style = document.createElementNS(ns, 'style');
       style.textContent = `
         #content path, #content polyline, #content line {
@@ -353,7 +341,7 @@
       URL.revokeObjectURL(a.href);
     });
 
-    // ----- Toolbar handlers -----
+    // ----- Toolbar -----
     widthInput.addEventListener('input', () => {
       widthVal.textContent = `${widthInput.value} px`;
     });
@@ -371,7 +359,7 @@
       const svgPt = screenToSVG(e.clientX, e.clientY);
       activePointers.set(e.pointerId, { lastScreen: screenPt, lastSVG: svgPt });
 
-      // Two-finger pinch zoom (mobile): regardless of mode
+      // Two-finger pinch zoom (mobile)
       if (activePointers.size === 2 && !pinchStart) {
         const ids = Array.from(activePointers.keys());
         const p1 = activePointers.get(ids[0]).lastSVG;
@@ -384,94 +372,102 @@
           distStart: length2(p1, p2)
         };
         hideEraser();
-        return; // pinch mode engaged
+        return;
       }
 
-      // Draw mode (single-touch or mouse/pen)
+      // Draw mode
       if (mode === 'draw' && activePointers.size === 1) {
         const path = makePath(svgPt);
         content.appendChild(path);
         drawingByPointer.set(e.pointerId, { path, lastSVG: svgPt });
       }
 
-      // Pan mode (start dragging with single pointer)
+      // Pan mode
       if (mode === 'pan' && activePointers.size === 1) {
         svg.classList.add('dragging');
       }
 
-      // Erase mode: show eraser indicator
+      // Erase mode
       if (mode === 'erase') {
         showEraser(svgPt);
-        // immediate erase on touch point
         eraseAtScreenPoint(e.clientX, e.clientY);
       }
     }
 
     function onPointerMove(e) {
       if (!activePointers.has(e.pointerId)) return;
-      e.preventDefault();
 
-      const prev = activePointers.get(e.pointerId);
-      const screenPt = { x: e.clientX, y: e.clientY };
-      const svgPt = screenToSVG(e.clientX, e.clientY);
-      activePointers.set(e.pointerId, { lastScreen: screenPt, lastSVG: svgPt });
+      // Use coalesced events where supported for smoother tracking
+      const events = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
 
-      // Handle pinch zoom when exactly two pointers are active
-      if (pinchStart && activePointers.size === 2) {
-        const p1 = activePointers.get(pinchStart.id1)?.lastSVG;
-        const p2 = activePointers.get(pinchStart.id2)?.lastSVG;
-        if (p1 && p2) {
-          const distNow = length2(p1, p2);
-          const scale = distNow / pinchStart.distStart;
-          const newVB = anchoredZoom(pinchStart.anchorSVG, scale, pinchStart.vbox);
-          // Optional: allow slight translation by midpoint movement
-          const anchorNow = { x:(p1.x+p2.x)/2, y:(p1.y+p2.y)/2 };
-          const dx = anchorNow.x - pinchStart.anchorSVG.x;
-          const dy = anchorNow.y - pinchStart.anchorSVG.y;
-          viewBox = { x:newVB.x - dx, y:newVB.y - dy, w:newVB.w, h:newVB.h };
-          applyViewBox();
-        }
-        return;
-      }
+      for (const ev of events) {
+        ev.preventDefault();
 
-      // Draw mode
-      if (mode === 'draw') {
-        const dra = drawingByPointer.get(e.pointerId);
-        if (dra) {
-          // Only append when movement in SVG space is meaningful
-          const dist = length2(dra.lastSVG, svgPt);
-          const minSeg = viewBox.w / 1000; // adapt threshold with zoom
-          if (dist >= minSeg) {
-            appendLineToPath(dra.path, svgPt);
-            dra.lastSVG = svgPt;
+        const prev = activePointers.get(e.pointerId);
+        const screenPt = { x: ev.clientX, y: ev.clientY };
+        const svgPt    = screenToSVG(ev.clientX, ev.clientY);
+        activePointers.set(e.pointerId, { lastScreen: screenPt, lastSVG: svgPt });
+
+        // ----- Pinch zoom -----
+        if (pinchStart && activePointers.size === 2) {
+          const p1 = activePointers.get(pinchStart.id1)?.lastSVG;
+          const p2 = activePointers.get(pinchStart.id2)?.lastSVG;
+          if (p1 && p2) {
+            const distNow = length2(p1, p2);
+            const scale = distNow / pinchStart.distStart;
+            const newVB = anchoredZoom(pinchStart.anchorSVG, scale, pinchStart.vbox);
+            const anchorNow = { x:(p1.x+p2.x)/2, y:(p1.y+p2.y)/2 };
+            const dxA = anchorNow.x - pinchStart.anchorSVG.x;
+            const dyA = anchorNow.y - pinchStart.anchorSVG.y;
+
+            viewBox = { x:newVB.x - dxA, y:newVB.y - dyA, w:newVB.w, h:newVB.h };
+            applyViewBox();
           }
+          continue;
         }
-        return;
-      }
 
-      // Pan mode (single pointer)
-      if (mode === 'pan' && activePointers.size === 1) {
-        const deltaSVG = { x: prev.lastSVG.x - svgPt.x, y: prev.lastSVG.y - svgPt.y };
-        viewBox.x += deltaSVG.x;
-        viewBox.y += deltaSVG.y;
-        applyViewBox();
-        return;
-      }
-
-      // Erase mode: sample along the movement segment in screen coordinates
-      if (mode === 'erase') {
-        showEraser(svgPt);
-        const last = prev.lastScreen;
-        const cur  = screenPt;
-        const dx = cur.x - last.x;
-        const dy = cur.y - last.y;
-        const steps = Math.max(1, Math.ceil(Math.hypot(dx, dy) / 12)); // ~12px sampling
-        for (let i=0;i<=steps;i++) {
-          const sx = last.x + dx * (i/steps);
-          const sy = last.y + dy * (i/steps);
-          eraseAtScreenPoint(sx, sy);
+        // ----- Draw mode -----
+        if (mode === 'draw') {
+          const dra = drawingByPointer.get(e.pointerId);
+          if (dra) {
+            const dist = Math.hypot(dra.lastSVG.x - svgPt.x, dra.lastSVG.y - svgPt.y);
+            const minSeg = viewBox.w / 1000; // adapt threshold with zoom
+            if (dist >= minSeg) {
+              appendLineToPath(dra.path, svgPt);
+              dra.lastSVG = svgPt;
+            }
+          }
+          continue;
         }
-        return;
+
+        // ----- Pan mode (fast: use screen deltas -> SVG units) -----
+        if (mode === 'pan' && activePointers.size === 1) {
+          const dxScreen = screenPt.x - prev.lastScreen.x;
+          const dyScreen = screenPt.y - prev.lastScreen.y;
+
+          // Convert screen pixels to SVG units using current cached scale
+          // Subtract so content visually follows the finger
+          viewBox.x -= dxScreen * pxScaleX;
+          viewBox.y -= dyScreen * pxScaleY;
+          applyViewBox();
+          continue;
+        }
+
+        // ----- Erase mode -----
+        if (mode === 'erase') {
+          showEraser(svgPt);
+          const last = prev.lastScreen;
+          const cur  = screenPt;
+          const dx = cur.x - last.x;
+          const dy = cur.y - last.y;
+          const steps = Math.max(1, Math.ceil(Math.hypot(dx, dy) / 12)); // ~12px sampling
+          for (let i=0;i<=steps;i++) {
+            const sx = last.x + dx * (i/steps);
+            const sy = last.y + dy * (i/steps);
+            eraseAtScreenPoint(sx, sy);
+          }
+          continue;
+        }
       }
     }
 
@@ -486,10 +482,8 @@
       // Finish drawing
       const dra = drawingByPointer.get(e.pointerId);
       if (dra) {
-        // If path too short (dot), turn into a small segment to show a dot
         const d = dra.path.getAttribute('d');
         if (/^M\s+([^\s]+)\s+([^\s]+)$/.test(d)) {
-          // make tiny segment
           const m = d.match(/^M\s+([^\s]+)\s+([^\s]+)$/);
           if (m) {
             const x = parseFloat(m[1]), y = parseFloat(m[2]);
@@ -517,7 +511,6 @@
       e.preventDefault();
       hideEraser();
 
-      // typical wheel delta: use exponential scale for smoothness
       const scale = Math.pow(1.0015, -e.deltaY); // deltaY>0 => zoom out
       const anchorSVG = screenToSVG(e.clientX, e.clientY);
       viewBox = anchoredZoom(anchorSVG, scale, viewBox);
@@ -529,13 +522,19 @@
     function resizeCanvas() {
       svg.style.width  = `${window.innerWidth}px`;
       svg.style.height = `${window.innerHeight}px`;
-      // No need to change viewBox; it represents the world-space
+      // Update cached pixel scale (dependent on clientWidth/clientHeight)
+      pxScaleX = viewBox.w / svg.clientWidth;
+      pxScaleY = viewBox.h / svg.clientHeight;
     }
-    window.addEventListener('resize', resizeCanvas);
+    window.addEventListener('resize', () => {
+      resizeCanvas();
+      // applyViewBox keeps zoom/position; resize only affects pixel scale cache
+      applyViewBox();
+    });
     resizeCanvas();
     applyViewBox();
 
-    // ----- Prevent default navigations / gestures for consistency -----
+    // ----- Prevent default native pinch (Safari iOS) -----
     document.addEventListener('gesturestart', (e)=> e.preventDefault());
     document.addEventListener('gesturechange',(e)=> e.preventDefault());
     document.addEventListener('gestureend',   (e)=> e.preventDefault());
